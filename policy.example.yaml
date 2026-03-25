@@ -1,0 +1,61 @@
+server:
+  listen_addr: ":8080"
+
+docker:
+  socket_path: "/var/run/docker.sock"
+  timeout_seconds: 15
+  log_tail_default: 100
+  log_tail_max: 500
+
+auth:
+  keys:
+    # Replace with your actual API key (generate with: openssl rand -hex 32)
+    your-api-key-here:
+      label: my-agent
+
+# ---------------------------------------------------------------------------
+# Project policies
+#
+# Each project key corresponds to a Docker Compose project name.
+# The project key is used for:
+#   - compose label matching (com.docker.compose.project)
+#   - the -p flag for compose commands (up, down, recreate, build)
+#
+# API: /v1/projects/{project}/services/{service}/{action}
+# ---------------------------------------------------------------------------
+
+projects:
+  # Project key = Docker Compose project name
+  myproject:
+    services:
+      # Service key = Docker Compose service name
+      api:
+        actions: [status, logs, restart, up, down]
+
+      worker:
+        actions: [status, logs, restart, up, down]
+
+      # Dangerous actions require explicit opt-in
+      app:
+        actions: [status, logs, restart, recreate, build]
+        dangerous: true
+
+      # Explicit container name (only if it differs from compose naming)
+      postgres:
+        container: myproject-postgres-1  # Optional override
+        actions: [status, logs]
+
+      safe-docker:
+        actions: [status, logs]
+
+  # Example: second project
+  # other-stack:
+  #   services:
+  #     api:
+  #       actions: [status, logs, restart]
+  #     postgres:
+  #       actions: [status, logs]
+
+logging:
+  level: info
+  format: json

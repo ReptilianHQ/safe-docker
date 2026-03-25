@@ -1,0 +1,11 @@
+services:
+  safe-docker:
+    build: .
+    restart: unless-stopped
+    environment:
+      SAFE_DOCKER_API_KEY: "${SAFE_DOCKER_API_KEY}"
+    volumes:
+      - ./policy.yaml:/app/policy.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:8080:8080"  # Bind to localhost only — do not expose publicly

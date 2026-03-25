@@ -1,0 +1,467 @@
+openapi: "3.0.3"
+
+info:
+  title: safe-docker
+  version: "2.0.0"
+  description: |
+    A policy-enforced HTTP proxy for Docker Compose operations.
+
+    All protected endpoints require an `X-API-Key` header matching a key
+    declared in your `policy.yaml`. The `/health` endpoint is always public.
+
+    **v2.0 breaking change:** API paths now include project scope:
+    `/v1/projects/{project}/services/{service}/{action}`
+
+servers:
+  - url: "http://localhost:8080"
+    description: Local instance
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  parameters:
+    ProjectParam:
+      name: project
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Docker Compose project name
+      example: myproject
+
+    ServiceParam:
+      name: service
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Docker Compose service name
+      example: api
+
+  responses:
+    Unauthorized:
+      description: Missing API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Invalid API key or action not allowed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Unknown project, service, or container
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: Docker operation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: "action not allowed"
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          example: "ok"
+
+    ProjectEntry:
+      type: object
+      required: [project, service_count]
+      properties:
+        project:
+          type: string
+          example: "myproject"
+        service_count:
+          type: integer
+          example: 5
+
+    ProjectsResponse:
+      type: object
+      required: [projects]
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectEntry"
+
+    ServiceEntry:
+      type: object
+      required: [service, actions]
+      properties:
+        service:
+          type: string
+          example: "api"
+        actions:
+          type: array
+          items:
+            type: string
+            enum: [status, logs, restart, start, stop, up, down, recreate, build]
+          example: ["status", "logs", "restart"]
+
+    ServicesResponse:
+      type: object
+      required: [project, services]
+      properties:
+        project:
+          type: string
+          example: "myproject"
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceEntry"
+
+    StatusResponse:
+      type: object
+      required: [project, service, container, id, state, status]
+      properties:
+        project:
+          type: string
+          example: "myproject"
+        service:
+          type: string
+          example: "api"
+        container:
+          type: string
+          example: "myproject-api-1"
+        id:
+          type: string
+          description: First 12 chars of the container ID
+          example: "abc123def456"
+        state:
+          type: string
+          example: "running"
+        status:
+          type: string
+          example: "Up 3 hours"
+
+    LifecycleResponse:
+      type: object
+      required: [project, service, container, status]
+      properties:
+        project:
+          type: string
+          example: "myproject"
+        service:
+          type: string
+          example: "api"
+        container:
+          type: string
+          example: "myproject-api-1"
+        status:
+          type: string
+          example: "restarted"
+
+    ComposeResponse:
+      type: object
+      required: [project, service, status]
+      properties:
+        project:
+          type: string
+          example: "myproject"
+        service:
+          type: string
+          example: "api"
+        status:
+          type: string
+          example: "up completed"
+        output:
+          type: string
+          description: Combined stdout/stderr from the compose command
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: |
+        Returns `ok` when the server is running and the Docker socket is reachable.
+        Returns `degraded` (503) if the Docker socket cannot be reached.
+        Does not require an API key.
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Docker socket unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /v1/projects:
+    get:
+      summary: List projects
+      description: Returns all projects declared in policy with their service counts.
+      responses:
+        "200":
+          description: Project list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/projects/{project}/services:
+    get:
+      summary: List services in project
+      description: Returns all services declared for a project with their allowed actions.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+      responses:
+        "200":
+          description: Service list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServicesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/projects/{project}/services/{service}/status:
+    get:
+      summary: Container status
+      description: Returns the current Docker state for the service's container.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Container status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/projects/{project}/services/{service}/logs:
+    get:
+      summary: Container logs
+      description: Returns recent stdout/stderr from the container.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+        - name: tail
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Number of log lines to return
+      responses:
+        "200":
+          description: Log output
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/projects/{project}/services/{service}/restart:
+    post:
+      summary: Restart container
+      description: Restarts the service's container via Docker SDK.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Restarted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LifecycleResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v1/projects/{project}/services/{service}/start:
+    post:
+      summary: Start container
+      description: Starts a stopped container via Docker SDK.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LifecycleResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v1/projects/{project}/services/{service}/stop:
+    post:
+      summary: Stop container
+      description: Stops a running container via Docker SDK.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LifecycleResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v1/projects/{project}/services/{service}/up:
+    post:
+      summary: Compose up
+      description: Runs `docker compose -p {project} up -d {service}`.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Up completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComposeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v1/projects/{project}/services/{service}/down:
+    post:
+      summary: Compose down
+      description: Runs `docker compose -p {project} down {service}`.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Down completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComposeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v1/projects/{project}/services/{service}/recreate:
+    post:
+      summary: Compose recreate (dangerous)
+      description: |
+        Runs `docker compose -p {project} up -d --force-recreate {service}`.
+        Requires `dangerous: true` in service policy.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Recreate completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComposeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /v1/projects/{project}/services/{service}/build:
+    post:
+      summary: Compose build (dangerous)
+      description: |
+        Runs `docker compose -p {project} build {service}`.
+        Requires `dangerous: true` in service policy.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+      responses:
+        "200":
+          description: Build completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComposeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
