@@ -1,11 +1,23 @@
 services:
   safe-docker:
-    build: .
+    # Use published image (or build: . for local development)
+    image: ghcr.io/reptilianhq/safe-docker:latest
+    # build: .
     restart: unless-stopped
+    # macOS: Docker socket requires root access inside container
+    # Linux: Can run as non-root if container user is in docker group
+    user: root
     environment:
       SAFE_DOCKER_API_KEY: "${SAFE_DOCKER_API_KEY}"
     volumes:
       - ./policy.yaml:/app/policy.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:8080:8080"  # Bind to localhost only — do not expose publicly
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
