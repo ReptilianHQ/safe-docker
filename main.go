@@ -339,6 +339,12 @@ func (s *Server) sweepExpiredApprovals() {
 		s.approvalsMu.Lock()
 		for token, ap := range s.approvals {
 			if now.After(ap.ExpiresAt) {
+				s.log.Info("approval expired",
+					"token", token[:8]+"…",
+					"action", ap.Action,
+					"service", ap.Service,
+					"project", ap.Project,
+				)
 				delete(s.approvals, token)
 			}
 		}
@@ -703,6 +709,10 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 	}
 
 	ttl := time.Duration(s.cfg.Approval.TokenTTLSecs) * time.Second
+	maxTTL := time.Duration(s.cfg.Approval.TokenTTLMaxSecs) * time.Second
+	if ttl > maxTTL {
+		ttl = maxTTL
+	}
 	expiresAt := time.Now().Add(ttl)
 
 	token, err := generateToken()
