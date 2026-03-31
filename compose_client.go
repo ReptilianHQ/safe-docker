@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/types"
@@ -60,6 +61,10 @@ func (c *ComposeClient) newService() (api.Compose, *bytes.Buffer, error) {
 }
 
 // loadProject loads a Compose project from a compose file.
+// It mirrors normal `docker compose` env resolution as closely as possible by:
+//   - setting the working directory to the compose file's directory
+//   - loading host OS env
+//   - loading .env from the project directory when present
 func (c *ComposeClient) loadProject(ctx context.Context, projectName, composeFile string) (*types.Project, error) {
 	if composeFile == "" {
 		composeFile = DefaultComposeFile
@@ -69,10 +74,20 @@ func (c *ComposeClient) loadProject(ctx context.Context, projectName, composeFil
 		return nil, fmt.Errorf("compose file not found at %s: %w", composeFile, err)
 	}
 
-	options, err := cli.NewProjectOptions(
-		[]string{composeFile},
+	projectDir := filepath.Dir(composeFile)
+	dotEnvPath := filepath.Join(projectDir, ".env")
+
+	optionFns := []cli.ProjectOptionsFn{
 		cli.WithName(projectName),
-	)
+		cli.WithWorkingDirectory(projectDir),
+		cli.WithOsEnv,
+	}
+	if _, err := os.Stat(dotEnvPath); err == nil {
+		optionFns = append(optionFns, cli.WithEnvFiles(dotEnvPath))
+	}
+	optionFns = append(optionFns, cli.WithDotEnv)
+
+	options, err := cli.NewProjectOptions([]string{composeFile}, optionFns...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create project options: %w", err)
 	}

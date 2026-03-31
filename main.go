@@ -59,7 +59,7 @@ type Config struct {
 }
 
 type ProjectConfig struct {
-	ComposeFile string                   `yaml:"compose_file"` // Path to docker-compose.yml (default: /app/docker-compose.yml)
+	ComposeFile string                   `yaml:"compose_file"` // Path to docker-compose.yml (default: /project/docker-compose.yml)
 	Services    map[string]ServicePolicy `yaml:"services"`
 }
 

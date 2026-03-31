@@ -3,19 +3,20 @@ WORKDIR /src
 
 RUN apk add --no-cache ca-certificates git
 
-COPY go.mod ./
-RUN go mod download || true
+# Copy dependency files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
 
+# Copy source and build
 COPY . .
-RUN go mod tidy
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/safe-docker .
 
-FROM alpine:3.20
+FROM alpine:3.23
 LABEL org.opencontainers.image.title="safe-docker" \
       org.opencontainers.image.description="Policy-enforced HTTP proxy for Docker Compose operations" \
       org.opencontainers.image.licenses="MIT"
 
-RUN apk add --no-cache ca-certificates wget \
+RUN apk add --no-cache ca-certificates wget docker-cli-buildx \
  && addgroup -S app \
  && adduser -S -G app app \
  && mkdir -p /app \
