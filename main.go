@@ -781,7 +781,7 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		s.approvalsMu.Lock()
 		delete(s.approvals, token)
 		s.approvalsMu.Unlock()
-		reason := "webhook POST failed"
+		var reason string
 		if err != nil {
 			reason = err.Error()
 		} else {
