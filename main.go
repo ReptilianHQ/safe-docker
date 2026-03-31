@@ -110,9 +110,9 @@ type pendingApproval struct {
 }
 
 type Server struct {
-	cfg        Config
-	docker     *client.Client
-	log        *slog.Logger
+	cfg         Config
+	docker      *client.Client
+	log         *slog.Logger
 	approvalsMu sync.Mutex
 	approvals   map[string]*pendingApproval
 }
@@ -330,25 +330,35 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 	return srv, nil
 }
 
+// sweepOnce performs one pass of cleanup, removing expired tokens from the approvals map.
+// Used by the background ticker and testable for unit tests.
+func (s *Server) sweepOnce() {
+	now := time.Now()
+	s.approvalsMu.Lock()
+	for token, ap := range s.approvals {
+		if now.After(ap.ExpiresAt) {
+			tokenPrefix := token
+			if len(token) > 8 {
+				tokenPrefix = token[:8] + "…"
+			}
+			s.log.Info("approval expired",
+				"token", tokenPrefix,
+				"action", ap.Action,
+				"service", ap.Service,
+				"project", ap.Project,
+			)
+			delete(s.approvals, token)
+		}
+	}
+	s.approvalsMu.Unlock()
+}
+
 // sweepExpiredApprovals periodically removes expired tokens from the approvals map.
 func (s *Server) sweepExpiredApprovals() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		now := time.Now()
-		s.approvalsMu.Lock()
-		for token, ap := range s.approvals {
-			if now.After(ap.ExpiresAt) {
-				s.log.Info("approval expired",
-					"token", token[:8]+"…",
-					"action", ap.Action,
-					"service", ap.Service,
-					"project", ap.Project,
-				)
-				delete(s.approvals, token)
-			}
-		}
-		s.approvalsMu.Unlock()
+		s.sweepOnce()
 	}
 }
 
@@ -705,6 +715,13 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, action, project, service string, composeArgs ...string) {
 	if s.cfg.Approval.WebhookURL == "" {
 		writeError(w, http.StatusForbidden, "dangerous action requires approval webhook to be configured")
+		return
+	}
+
+	// Validate webhook URL scheme — must be http:// or https://
+	if !strings.HasPrefix(s.cfg.Approval.WebhookURL, "http://") && !strings.HasPrefix(s.cfg.Approval.WebhookURL, "https://") {
+		s.log.Error("invalid webhook URL scheme", "url", s.cfg.Approval.WebhookURL)
+		writeError(w, http.StatusInternalServerError, "invalid webhook URL scheme")
 		return
 	}
 

@@ -437,8 +437,8 @@ func TestStripDockerMuxHeader_ValidFrame(t *testing.T) {
 	size := uint32(len(payload))
 	// Docker mux header: [stream_type(1), padding(3), size(4 bytes big-endian)]
 	header := []byte{
-		0x01,                   // stdout
-		0x00, 0x00, 0x00,       // padding
+		0x01,             // stdout
+		0x00, 0x00, 0x00, // padding
 		byte(size >> 24), byte(size >> 16), byte(size >> 8), byte(size),
 	}
 	frame := append(header, payload...)
@@ -710,6 +710,44 @@ func TestApprove_RequiresAuth(t *testing.T) {
 	}
 }
 
+// TestApprove_MalformedJSON verifies 400 for malformed JSON body.
+func TestApprove_MalformedJSON(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/approve", strings.NewReader("{{{"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-key")
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for malformed JSON, got %d", rr.Code)
+	}
+	body := decodeJSON(t, rr.Body)
+	if _, ok := body["error"]; !ok {
+		t.Error("expected error field in response")
+	}
+}
+
+// TestDangerous_InvalidWebhookScheme verifies 500 when webhook URL has invalid scheme.
+func TestDangerous_InvalidWebhookScheme(t *testing.T) {
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = "file:///etc/passwd" // invalid scheme
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("want 500 for invalid webhook scheme, got %d", rr.Code)
+	}
+	body := decodeJSON(t, rr.Body)
+	if _, ok := body["error"]; !ok {
+		t.Error("expected error field in response")
+	}
+}
+
 // TestGenerateToken verifies tokens are 64 hex chars (32 bytes) and unique.
 func TestGenerateToken(t *testing.T) {
 	seen := make(map[string]struct{})
@@ -736,5 +774,104 @@ func TestDefaults_ApprovalTTL(t *testing.T) {
 	}
 	if cfg.Approval.TokenTTLMaxSecs != 600 {
 		t.Errorf("expected default TokenTTLMaxSecs=600, got %d", cfg.Approval.TokenTTLMaxSecs)
+	}
+}
+
+// TestDangerous_TTLClamped verifies that TokenTTLSecs is clamped to TokenTTLMaxSecs.
+func TestDangerous_TTLClamped(t *testing.T) {
+	var receivedPayload map[string]string
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&receivedPayload); err != nil {
+			t.Errorf("decode webhook payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookSrv.Close()
+
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = webhookSrv.URL
+	cfg.Approval.TokenTTLSecs = 1000   // request 1000 seconds
+	cfg.Approval.TokenTTLMaxSecs = 300 // but max is 300 seconds
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	now := time.Now()
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d", rr.Code)
+	}
+
+	// Check that webhook received the expires_at field
+	if receivedPayload == nil {
+		t.Fatal("webhook was not called")
+	}
+	expiresAtStr, ok := receivedPayload["expires_at"]
+	if !ok {
+		t.Fatal("webhook payload missing expires_at field")
+	}
+
+	// Parse expires_at timestamp
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+	if err != nil {
+		t.Fatalf("parse expires_at: %v", err)
+	}
+
+	// Verify TTL is clamped to max (300 seconds, which is 5 minutes)
+	actualTTL := expiresAt.Sub(now).Seconds()
+	expectedTTL := 300.0
+	tolerance := 2.0 // allow 2 seconds of clock drift
+
+	if actualTTL < expectedTTL-tolerance || actualTTL > expectedTTL+tolerance {
+		t.Errorf("want TTL ~300s, got %.1f seconds", actualTTL)
+	}
+}
+
+// TestSweeper_LogsExpiredTokens verifies that sweepOnce() logs expired tokens with correct fields.
+func TestSweeper_LogsExpiredTokens(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = map[string]*pendingApproval{
+		"valid-token": {
+			Action:    "build",
+			Project:   "testproj",
+			Service:   "danger",
+			ExpiresAt: time.Now().Add(10 * time.Minute),
+			Used:      false,
+		},
+		"expired-token-1": {
+			Action:    "recreate",
+			Project:   "testproj",
+			Service:   "danger",
+			ExpiresAt: time.Now().Add(-5 * time.Minute),
+			Used:      false,
+		},
+		"expired-token-2": {
+			Action:    "build",
+			Project:   "testproj",
+			Service:   "danger",
+			ExpiresAt: time.Now().Add(-1 * time.Second),
+			Used:      false,
+		},
+	}
+
+	// Run one sweep
+	srv.sweepOnce()
+
+	// Verify expired tokens were removed
+	srv.approvalsMu.Lock()
+	count := len(srv.approvals)
+	_, hasValid := srv.approvals["valid-token"]
+	_, hasExpired1 := srv.approvals["expired-token-1"]
+	_, hasExpired2 := srv.approvals["expired-token-2"]
+	srv.approvalsMu.Unlock()
+
+	if count != 1 {
+		t.Errorf("expected 1 approval after sweep, got %d", count)
+	}
+	if !hasValid {
+		t.Error("valid token was unexpectedly removed")
+	}
+	if hasExpired1 || hasExpired2 {
+		t.Error("expired tokens were not removed")
 	}
 }

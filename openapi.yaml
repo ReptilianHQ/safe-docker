@@ -465,3 +465,58 @@ paths:
           $ref: "#/components/responses/NotFound"
         "502":
           $ref: "#/components/responses/BadGateway"
+
+  /v1/approve:
+    post:
+      summary: Execute a previously-approved dangerous action
+      description: |
+        Executes a dangerous action (build, recreate) after human approval via webhook.
+        The approval token must be obtained from the webhook payload sent during the
+        initial dangerous action request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approval_key]
+              properties:
+                approval_key:
+                  type: string
+                  description: Token received via webhook
+                  example: "abcd1234..."
+      responses:
+        "200":
+          description: Action executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComposeResponse"
+        "400":
+          description: Missing or invalid approval_key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Approval token not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Approval token already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: Approval token expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          $ref: "#/components/responses/BadGateway"
