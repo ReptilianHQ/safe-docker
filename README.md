@@ -11,10 +11,12 @@ Safe by default. Human-readable policy. Built for agents, operators, and interna
 - health, status, logs (read-only)
 - restart, start, stop (container lifecycle)
 - up, down (compose service management)
-- recreate, build (dangerous — require explicit opt-in)
+- recreate, build (dangerous — require explicit opt-in + HITL approval)
 
 It does **not** expose the full Docker API.
 It is a policy firewall in front of Docker, not a Docker replacement.
+
+**No CLI shelling.** All compose operations go through the [Docker Compose SDK](https://docs.docker.com/compose/compose-sdk/) — no `docker` binary required in the container.
 
 ## Why
 
@@ -144,10 +146,24 @@ curl -X POST \
 
 See `docker-compose.example.yaml`.
 
+**Required for build/recreate:** Mount the project root read-only at `/project`:
+
+```yaml
+safe-docker:
+  image: ghcr.io/reptilianhq/safe-docker:latest
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./:/project:ro  # Project root for builds
+    - ./control/policy.yaml:/app/policy.yaml:ro
+```
+
+The SDK reads the compose file and build contexts from `/project`. Without this mount, build and recreate operations will fail.
+
 Recommended deployment posture:
 - bind only to localhost or a trusted internal network
 - put behind an authenticated reverse proxy if exposed beyond local host
 - keep policy file read-only
+- mount project root read-only (`:ro`) — safe-docker only needs to read, not write
 - do not share API keys between unrelated callers
 
 ## OpenAPI

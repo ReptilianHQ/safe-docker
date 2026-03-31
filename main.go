@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
+
 	"os/signal"
 	"regexp"
 	"slices"
@@ -59,7 +59,8 @@ type Config struct {
 }
 
 type ProjectConfig struct {
-	Services map[string]ServicePolicy `yaml:"services"`
+	ComposeFile string                   `yaml:"compose_file"` // Path to docker-compose.yml (default: /app/docker-compose.yml)
+	Services    map[string]ServicePolicy `yaml:"services"`
 }
 
 type ServerConfig struct {
@@ -101,17 +102,17 @@ type ApprovalConfig struct {
 
 // pendingApproval holds state for a dangerous action awaiting human sign-off.
 type pendingApproval struct {
-	Action      string
-	Project     string
-	Service     string
-	ComposeArgs []string
-	ExpiresAt   time.Time
-	Used        bool
+	Action    string
+	Project   string
+	Service   string
+	ExpiresAt time.Time
+	Used      bool
 }
 
 type Server struct {
 	cfg         Config
 	docker      *client.Client
+	compose     *ComposeClient
 	log         *slog.Logger
 	approvalsMu sync.Mutex
 	approvals   map[string]*pendingApproval
@@ -317,9 +318,17 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 	}
 	log.Info("docker connected", "server_version", info.ServerVersion, "containers", info.Containers)
 
+	// Initialize Compose SDK client for build/up/down/recreate operations
+	composeClient, err := NewComposeClient(cfg.Docker.SocketPath)
+	if err != nil {
+		return nil, fmt.Errorf("create compose client: %w", err)
+	}
+	log.Info("compose SDK initialized")
+
 	srv := &Server{
 		cfg:       cfg,
 		docker:    dockerClient,
+		compose:   composeClient,
 		log:       log,
 		approvals: make(map[string]*pendingApproval),
 	}
@@ -654,22 +663,22 @@ func (s *Server) stopHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) upHandler(w http.ResponseWriter, r *http.Request) {
-	s.composeHandler(w, r, "up", "up", "-d")
+	s.composeHandler(w, r, "up")
 }
 
 func (s *Server) downHandler(w http.ResponseWriter, r *http.Request) {
-	s.composeHandler(w, r, "down", "down")
+	s.composeHandler(w, r, "down")
 }
 
 func (s *Server) recreateHandler(w http.ResponseWriter, r *http.Request) {
-	s.composeHandler(w, r, "recreate", "up", "-d", "--force-recreate")
+	s.composeHandler(w, r, "recreate")
 }
 
 func (s *Server) buildHandler(w http.ResponseWriter, r *http.Request) {
-	s.composeHandler(w, r, "build", "build")
+	s.composeHandler(w, r, "build")
 }
 
-func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action string, composeArgs ...string) {
+func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action string) {
 	project, service, _, ok := s.authorizeAction(w, r, action)
 	if !ok {
 		return
@@ -677,28 +686,43 @@ func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action s
 
 	// Intercept dangerous actions for HITL approval.
 	if _, isDangerous := dangerousActions[action]; isDangerous {
-		s.handleDangerousAction(w, r, action, project, service, composeArgs...)
+		s.handleDangerousAction(w, r, action, project, service)
 		return
 	}
 
-	s.executeCompose(w, r, action, project, service, composeArgs...)
+	s.executeCompose(w, r, action, project, service)
 }
 
-// executeCompose runs the actual docker compose command and writes the response.
+// executeCompose runs compose operations via the SDK (no CLI exec).
 // Used by both composeHandler (non-dangerous) and approveHandler (post-approval).
-func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, project, service string, composeArgs ...string) {
+func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, project, service string) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Docker.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	// Compose commands use the project key as -p flag and service key as the compose service name
-	args := []string{"compose", "-p", project}
-	args = append(args, composeArgs...)
-	args = append(args, service)
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		s.audit(r, action, service, "", "error", err.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, err, string(output)))
+	// Get compose file path from project config (or use default)
+	composeFile := ""
+	if projectCfg, ok := s.cfg.Projects[project]; ok {
+		composeFile = projectCfg.ComposeFile
+	}
+
+	var result ComposeResult
+	switch action {
+	case "up":
+		result = s.compose.Up(ctx, project, service, composeFile)
+	case "down":
+		result = s.compose.Down(ctx, project, service, composeFile)
+	case "recreate":
+		result = s.compose.Recreate(ctx, project, service, composeFile)
+	case "build":
+		result = s.compose.Build(ctx, project, service, composeFile)
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported compose action: %s", action))
+		return
+	}
+
+	if result.Error != nil {
+		s.audit(r, action, service, "", "error", result.Error.Error())
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, result.Error, result.Output))
 		return
 	}
 	s.audit(r, action, service, "", "success", "")
@@ -706,13 +730,13 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 		"project": project,
 		"service": service,
 		"status":  action + " completed",
-		"output":  string(output),
+		"output":  result.Output,
 	})
 }
 
 // handleDangerousAction intercepts a dangerous compose action and requests
 // human approval via webhook before allowing execution.
-func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, action, project, service string, composeArgs ...string) {
+func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, action, project, service string) {
 	if s.cfg.Approval.WebhookURL == "" {
 		writeError(w, http.StatusForbidden, "dangerous action requires approval webhook to be configured")
 		return
@@ -740,12 +764,11 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 	}
 
 	ap := &pendingApproval{
-		Action:      action,
-		Project:     project,
-		Service:     service,
-		ComposeArgs: composeArgs,
-		ExpiresAt:   expiresAt,
-		Used:        false,
+		Action:    action,
+		Project:   project,
+		Service:   service,
+		ExpiresAt: expiresAt,
+		Used:      false,
 	}
 	s.approvalsMu.Lock()
 	s.approvals[token] = ap
@@ -843,22 +866,32 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 	action := ap.Action
 	project := ap.Project
 	service := ap.Service
-	composeArgs := make([]string, len(ap.ComposeArgs))
-	copy(composeArgs, ap.ComposeArgs)
 	s.approvalsMu.Unlock()
 
-	// Execute the compose command directly (skip dangerous check).
+	// Execute via Compose SDK (no CLI exec).
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Docker.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	args := []string{"compose", "-p", project}
-	args = append(args, composeArgs...)
-	args = append(args, service)
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		s.audit(r, "approve:"+action, service, "", "error", err.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, err, string(output)))
+	// Get compose file path from project config (or use default)
+	composeFile := ""
+	if projectCfg, ok := s.cfg.Projects[project]; ok {
+		composeFile = projectCfg.ComposeFile
+	}
+
+	var result ComposeResult
+	switch action {
+	case "recreate":
+		result = s.compose.Recreate(ctx, project, service, composeFile)
+	case "build":
+		result = s.compose.Build(ctx, project, service, composeFile)
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported approved action: %s", action))
+		return
+	}
+
+	if result.Error != nil {
+		s.audit(r, "approve:"+action, service, "", "error", result.Error.Error())
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, result.Error, result.Output))
 		return
 	}
 
@@ -867,7 +900,7 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 		"status":  "executed",
 		"project": project,
 		"service": service,
-		"output":  string(output),
+		"output":  result.Output,
 	})
 }
 
