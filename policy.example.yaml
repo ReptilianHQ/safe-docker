@@ -59,3 +59,19 @@ projects:
 logging:
   level: info
   format: json
+
+# ---------------------------------------------------------------------------
+# Human-in-the-loop (HITL) approval for dangerous actions
+#
+# When webhook_url is set, dangerous actions (recreate, build) are intercepted:
+#   1. A one-time approval token is generated and POSTed to webhook_url
+#   2. The caller receives HTTP 202 pending_approval
+#   3. A human reviews the webhook payload and calls POST /v1/approve
+#      with {"approval_key": "<token>"} to execute the action
+#
+# If webhook_url is empty, dangerous actions return HTTP 403.
+#
+# approval:
+#   webhook_url: "https://hooks.example.com/safe-docker/approve"
+#   token_ttl_seconds: 120      # How long the token is valid (default: 120)
+#   token_ttl_max_seconds: 600  # Maximum TTL cap (default: 600)

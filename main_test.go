@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -499,5 +501,240 @@ func TestValidServiceNameRegex(t *testing.T) {
 		if validServiceName.MatchString(name) {
 			t.Errorf("expected %q to be invalid", name)
 		}
+	}
+}
+
+// ─── HITL approval helpers ───────────────────────────────────────────────────
+
+// postBody makes an authenticated POST with a JSON body.
+func postBody(t *testing.T, srv *Server, path, apiKey string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
+	return rr
+}
+
+// configWithDangerousService returns a config that includes a service allowing build/recreate.
+func configWithDangerousService() Config {
+	cfg := minimalConfig()
+	proj := cfg.Projects["testproj"]
+	proj.Services["danger"] = ServicePolicy{
+		Container: "testproj-danger-1",
+		Actions:   []string{"build", "recreate"},
+		Dangerous: true,
+	}
+	cfg.Projects["testproj"] = proj
+	return cfg
+}
+
+// ─── HITL approval tests ─────────────────────────────────────────────────────
+
+// TestDangerous_NoWebhook verifies that dangerous actions with no webhook configured return 403.
+func TestDangerous_NoWebhook(t *testing.T) {
+	cfg := configWithDangerousService()
+	// No webhook URL set.
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("want 403 when no webhook configured, got %d", rr.Code)
+	}
+	body := decodeJSON(t, rr.Body)
+	if _, ok := body["error"]; !ok {
+		t.Error("expected error field in response")
+	}
+}
+
+// TestDangerous_WebhookReceivesPayload verifies webhook is POSTed with correct fields
+// and the caller gets 202 (token must NOT appear in response).
+func TestDangerous_WebhookReceivesPayload(t *testing.T) {
+	var receivedPayload map[string]string
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&receivedPayload); err != nil {
+			t.Errorf("decode webhook payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookSrv.Close()
+
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = webhookSrv.URL
+	cfg.Approval.TokenTTLSecs = 120
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusAccepted {
+		t.Errorf("want 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Response body must NOT contain the token.
+	respBody := decodeJSON(t, rr.Body)
+	if _, hasToken := respBody["approval_key"]; hasToken {
+		t.Error("approval_key must NOT appear in the response body")
+	}
+	if status, _ := respBody["status"].(string); status != "pending_approval" {
+		t.Errorf("want status=pending_approval, got %q", status)
+	}
+
+	// Webhook must have received the token and required fields.
+	if receivedPayload == nil {
+		t.Fatal("webhook was not called")
+	}
+	for _, field := range []string{"approval_key", "action", "service", "project", "expires_at", "message"} {
+		if receivedPayload[field] == "" {
+			t.Errorf("webhook payload missing field %q", field)
+		}
+	}
+	if receivedPayload["action"] != "build" {
+		t.Errorf("want action=build, got %q", receivedPayload["action"])
+	}
+	if receivedPayload["project"] != "testproj" {
+		t.Errorf("want project=testproj, got %q", receivedPayload["project"])
+	}
+	if receivedPayload["service"] != "danger" {
+		t.Errorf("want service=danger, got %q", receivedPayload["service"])
+	}
+}
+
+// TestDangerous_WebhookFailure verifies 503 is returned and token is cleaned up when webhook fails.
+func TestDangerous_WebhookFailure(t *testing.T) {
+	// Server that always returns 500.
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer webhookSrv.Close()
+
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = webhookSrv.URL
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503 on webhook failure, got %d", rr.Code)
+	}
+
+	// Token must have been cleaned up.
+	srv.approvalsMu.Lock()
+	count := len(srv.approvals)
+	srv.approvalsMu.Unlock()
+	if count != 0 {
+		t.Errorf("expected no pending approvals after webhook failure, got %d", count)
+	}
+}
+
+// TestApprove_MissingKey verifies 404 for unknown token.
+func TestApprove_MissingKey(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{"approval_key": "nonexistent"})
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("want 404 for missing token, got %d", rr.Code)
+	}
+}
+
+// TestApprove_ExpiredToken verifies 410 for expired token.
+func TestApprove_ExpiredToken(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = map[string]*pendingApproval{
+		"expired-token": {
+			Action:    "build",
+			Project:   "testproj",
+			Service:   "danger",
+			ExpiresAt: time.Now().Add(-1 * time.Minute), // already expired
+			Used:      false,
+		},
+	}
+
+	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{"approval_key": "expired-token"})
+	if rr.Code != http.StatusGone {
+		t.Errorf("want 410 for expired token, got %d", rr.Code)
+	}
+}
+
+// TestApprove_UsedToken verifies 409 for already-used token.
+func TestApprove_UsedToken(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = map[string]*pendingApproval{
+		"used-token": {
+			Action:    "build",
+			Project:   "testproj",
+			Service:   "danger",
+			ExpiresAt: time.Now().Add(5 * time.Minute),
+			Used:      true, // already used
+		},
+	}
+
+	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{"approval_key": "used-token"})
+	if rr.Code != http.StatusConflict {
+		t.Errorf("want 409 for used token, got %d", rr.Code)
+	}
+}
+
+// TestApprove_EmptyKey verifies 400 when approval_key is missing.
+func TestApprove_EmptyKey(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{})
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for missing approval_key, got %d", rr.Code)
+	}
+}
+
+// TestApprove_RequiresAuth verifies /v1/approve is behind API key auth.
+func TestApprove_RequiresAuth(t *testing.T) {
+	cfg := configWithDangerousService()
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := postBody(t, srv, "/v1/approve", "", map[string]string{"approval_key": "sometoken"})
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 without API key, got %d", rr.Code)
+	}
+}
+
+// TestGenerateToken verifies tokens are 64 hex chars (32 bytes) and unique.
+func TestGenerateToken(t *testing.T) {
+	seen := make(map[string]struct{})
+	for i := 0; i < 10; i++ {
+		tok, err := generateToken()
+		if err != nil {
+			t.Fatalf("generateToken error: %v", err)
+		}
+		if len(tok) != 64 {
+			t.Errorf("expected 64-char hex token, got len=%d: %q", len(tok), tok)
+		}
+		if _, dup := seen[tok]; dup {
+			t.Errorf("duplicate token generated: %q", tok)
+		}
+		seen[tok] = struct{}{}
+	}
+}
+
+// TestDefaults_ApprovalTTL verifies approval TTL defaults are set correctly.
+func TestDefaults_ApprovalTTL(t *testing.T) {
+	cfg := defaults()
+	if cfg.Approval.TokenTTLSecs != 120 {
+		t.Errorf("expected default TokenTTLSecs=120, got %d", cfg.Approval.TokenTTLSecs)
+	}
+	if cfg.Approval.TokenTTLMaxSecs != 600 {
+		t.Errorf("expected default TokenTTLMaxSecs=600, got %d", cfg.Approval.TokenTTLMaxSecs)
 	}
 }

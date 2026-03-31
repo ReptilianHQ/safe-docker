@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +18,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,11 +50,12 @@ var dangerousActions = map[string]struct{}{
 }
 
 type Config struct {
-	Server   ServerConfig              `yaml:"server"`
-	Docker   DockerConfig              `yaml:"docker"`
-	Auth     AuthConfig                `yaml:"auth"`
-	Projects map[string]ProjectConfig  `yaml:"projects"`
-	Logging  LoggingConfig             `yaml:"logging"`
+	Server   ServerConfig             `yaml:"server"`
+	Docker   DockerConfig             `yaml:"docker"`
+	Auth     AuthConfig               `yaml:"auth"`
+	Projects map[string]ProjectConfig `yaml:"projects"`
+	Logging  LoggingConfig            `yaml:"logging"`
+	Approval ApprovalConfig           `yaml:"approval"`
 }
 
 type ProjectConfig struct {
@@ -87,10 +92,29 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
+// ApprovalConfig controls the human-in-the-loop webhook for dangerous actions.
+type ApprovalConfig struct {
+	WebhookURL      string `yaml:"webhook_url"`
+	TokenTTLSecs    int    `yaml:"token_ttl_seconds"`
+	TokenTTLMaxSecs int    `yaml:"token_ttl_max_seconds"`
+}
+
+// pendingApproval holds state for a dangerous action awaiting human sign-off.
+type pendingApproval struct {
+	Action      string
+	Project     string
+	Service     string
+	ComposeArgs []string
+	ExpiresAt   time.Time
+	Used        bool
+}
+
 type Server struct {
-	cfg    Config
-	docker *client.Client
-	log    *slog.Logger
+	cfg        Config
+	docker     *client.Client
+	log        *slog.Logger
+	approvalsMu sync.Mutex
+	approvals   map[string]*pendingApproval
 }
 
 type auditEntry struct {
@@ -165,6 +189,10 @@ func defaults() Config {
 		Auth:     AuthConfig{Keys: map[string]APIKeyConfig{}},
 		Projects: map[string]ProjectConfig{},
 		Logging:  LoggingConfig{Level: "info", Format: "json"},
+		Approval: ApprovalConfig{
+			TokenTTLSecs:    120,
+			TokenTTLMaxSecs: 600,
+		},
 	}
 }
 
@@ -288,7 +316,43 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("docker socket not reachable at %q: %w", cfg.Docker.SocketPath, err)
 	}
 	log.Info("docker connected", "server_version", info.ServerVersion, "containers", info.Containers)
-	return &Server{cfg: cfg, docker: dockerClient, log: log}, nil
+
+	srv := &Server{
+		cfg:       cfg,
+		docker:    dockerClient,
+		log:       log,
+		approvals: make(map[string]*pendingApproval),
+	}
+
+	// Background sweeper: remove expired tokens every 60 seconds.
+	go srv.sweepExpiredApprovals()
+
+	return srv, nil
+}
+
+// sweepExpiredApprovals periodically removes expired tokens from the approvals map.
+func (s *Server) sweepExpiredApprovals() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		s.approvalsMu.Lock()
+		for token, ap := range s.approvals {
+			if now.After(ap.ExpiresAt) {
+				delete(s.approvals, token)
+			}
+		}
+		s.approvalsMu.Unlock()
+	}
+}
+
+// generateToken creates a cryptographically random 32-byte hex token.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func (s *Server) router() http.Handler {
@@ -312,6 +376,7 @@ func (s *Server) router() http.Handler {
 		r.Post("/v1/projects/{project}/services/{service}/down", s.downHandler)
 		r.Post("/v1/projects/{project}/services/{service}/recreate", s.recreateHandler)
 		r.Post("/v1/projects/{project}/services/{service}/build", s.buildHandler)
+		r.Post("/v1/approve", s.approveHandler)
 	})
 	return r
 }
@@ -593,6 +658,19 @@ func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action s
 	if !ok {
 		return
 	}
+
+	// Intercept dangerous actions for HITL approval.
+	if _, isDangerous := dangerousActions[action]; isDangerous {
+		s.handleDangerousAction(w, r, action, project, service, composeArgs...)
+		return
+	}
+
+	s.executeCompose(w, r, action, project, service, composeArgs...)
+}
+
+// executeCompose runs the actual docker compose command and writes the response.
+// Used by both composeHandler (non-dangerous) and approveHandler (post-approval).
+func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, project, service string, composeArgs ...string) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Docker.TimeoutSeconds)*time.Second)
 	defer cancel()
 
@@ -612,6 +690,156 @@ func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action s
 		"project": project,
 		"service": service,
 		"status":  action + " completed",
+		"output":  string(output),
+	})
+}
+
+// handleDangerousAction intercepts a dangerous compose action and requests
+// human approval via webhook before allowing execution.
+func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, action, project, service string, composeArgs ...string) {
+	if s.cfg.Approval.WebhookURL == "" {
+		writeError(w, http.StatusForbidden, "dangerous action requires approval webhook to be configured")
+		return
+	}
+
+	ttl := time.Duration(s.cfg.Approval.TokenTTLSecs) * time.Second
+	expiresAt := time.Now().Add(ttl)
+
+	token, err := generateToken()
+	if err != nil {
+		s.log.Error("failed to generate approval token", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to generate approval token")
+		return
+	}
+
+	ap := &pendingApproval{
+		Action:      action,
+		Project:     project,
+		Service:     service,
+		ComposeArgs: composeArgs,
+		ExpiresAt:   expiresAt,
+		Used:        false,
+	}
+	s.approvalsMu.Lock()
+	s.approvals[token] = ap
+	s.approvalsMu.Unlock()
+
+	// POST to webhook.
+	webhookPayload := map[string]string{
+		"approval_key": token,
+		"action":       action,
+		"service":      service,
+		"project":      project,
+		"expires_at":   expiresAt.UTC().Format(time.RFC3339),
+		"message":      fmt.Sprintf("Agent requested: docker compose %s %s", action, service),
+	}
+	payloadBytes, _ := json.Marshal(webhookPayload)
+
+	webhookCtx, webhookCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer webhookCancel()
+
+	req, err := http.NewRequestWithContext(webhookCtx, http.MethodPost, s.cfg.Approval.WebhookURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		s.approvalsMu.Lock()
+		delete(s.approvals, token)
+		s.approvalsMu.Unlock()
+		s.log.Error("failed to build webhook request", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "failed to reach approval webhook")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode >= 500 {
+		s.approvalsMu.Lock()
+		delete(s.approvals, token)
+		s.approvalsMu.Unlock()
+		reason := "webhook POST failed"
+		if err != nil {
+			reason = err.Error()
+		} else {
+			reason = fmt.Sprintf("webhook returned %d", resp.StatusCode)
+			_ = resp.Body.Close()
+		}
+		s.log.Error("approval webhook error", "reason", reason)
+		writeError(w, http.StatusServiceUnavailable, "approval webhook unavailable")
+		return
+	}
+	_ = resp.Body.Close()
+
+	s.log.Info("approval pending",
+		"action", action,
+		"project", project,
+		"service", service,
+		"expires_at", expiresAt.UTC().Format(time.RFC3339),
+		"caller", callerFromContext(r.Context()),
+	)
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "pending_approval",
+		"message": "approval requested \u2014 waiting for human confirmation",
+	})
+}
+
+// approveHandler handles POST /v1/approve — executes a previously approved action.
+func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ApprovalKey string `json:"approval_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ApprovalKey) == "" {
+		writeError(w, http.StatusBadRequest, "approval_key is required")
+		return
+	}
+	token := body.ApprovalKey
+
+	s.approvalsMu.Lock()
+	ap, exists := s.approvals[token]
+	if !exists {
+		s.approvalsMu.Unlock()
+		writeError(w, http.StatusNotFound, "approval token not found")
+		return
+	}
+	if time.Now().After(ap.ExpiresAt) {
+		delete(s.approvals, token)
+		s.approvalsMu.Unlock()
+		writeError(w, http.StatusGone, "approval token has expired")
+		return
+	}
+	if ap.Used {
+		s.approvalsMu.Unlock()
+		writeError(w, http.StatusConflict, "approval token already used")
+		return
+	}
+
+	// Mark used and copy fields before releasing the lock.
+	ap.Used = true
+	action := ap.Action
+	project := ap.Project
+	service := ap.Service
+	composeArgs := make([]string, len(ap.ComposeArgs))
+	copy(composeArgs, ap.ComposeArgs)
+	s.approvalsMu.Unlock()
+
+	// Execute the compose command directly (skip dangerous check).
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Docker.TimeoutSeconds)*time.Second)
+	defer cancel()
+
+	args := []string{"compose", "-p", project}
+	args = append(args, composeArgs...)
+	args = append(args, service)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		s.audit(r, "approve:"+action, service, "", "error", err.Error())
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, err, string(output)))
+		return
+	}
+
+	s.audit(r, "approve:"+action, service, "", "success", "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "executed",
+		"project": project,
+		"service": service,
 		"output":  string(output),
 	})
 }
