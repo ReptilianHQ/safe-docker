@@ -206,8 +206,8 @@ func TestConfigValidate_LogTailMaxLessThanDefault(t *testing.T) {
 
 func TestConfigDefaults(t *testing.T) {
 	cfg := defaults()
-	if cfg.Server.ListenAddr != ":8080" {
-		t.Errorf("expected listen_addr :8080, got %q", cfg.Server.ListenAddr)
+	if cfg.Server.ListenAddr != "127.0.0.1:8080" {
+		t.Errorf("expected listen_addr 127.0.0.1:8080, got %q", cfg.Server.ListenAddr)
 	}
 	if cfg.Docker.TimeoutSeconds != 15 {
 		t.Errorf("expected timeout 15, got %d", cfg.Docker.TimeoutSeconds)

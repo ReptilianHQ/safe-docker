@@ -93,7 +93,7 @@ type pendingApproval struct {
 
 func defaults() Config {
 	return Config{
-		Server: ServerConfig{ListenAddr: ":8080"},
+		Server: ServerConfig{ListenAddr: "127.0.0.1:8080"},
 		Docker: DockerConfig{
 			SocketPath:     "/var/run/docker.sock",
 			TimeoutSeconds: 15,

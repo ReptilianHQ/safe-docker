@@ -1,5 +1,7 @@
 server:
-  listen_addr: ":8080"
+  # Use "0.0.0.0:8080" in containerized deployments for port mapping.
+  # Default (bare-metal): 127.0.0.1:8080
+  listen_addr: "0.0.0.0:8080"
 
 docker:
   socket_path: "/var/run/docker.sock"
