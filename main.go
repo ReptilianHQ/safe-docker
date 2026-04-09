@@ -373,7 +373,9 @@ func (s *Server) sweepExpiredApprovals() {
 
 // generateToken creates a cryptographically random 32-byte hex token.
 func generateToken() (string, error) {
-	b := make([]byte, 32)
+	// Keep approval tokens short enough to fit comfortably in Telegram callback_data
+	// once prefixed (e.g. "build:confirm:<token>"). 12 random bytes = 24 hex chars.
+	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate token: %w", err)
 	}
@@ -805,14 +807,21 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		delete(s.approvals, token)
 		s.approvalsMu.Unlock()
 		var reason string
+		var detail string
 		if err != nil {
 			reason = err.Error()
+			detail = "failed to reach approval webhook"
 		} else {
-			reason = fmt.Sprintf("webhook returned %d", resp.StatusCode)
+			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			detail = strings.TrimSpace(string(bodyBytes))
+			if detail == "" {
+				detail = fmt.Sprintf("webhook returned %d", resp.StatusCode)
+			}
+			reason = fmt.Sprintf("webhook returned %d: %s", resp.StatusCode, detail)
 			_ = resp.Body.Close()
 		}
 		s.log.Error("approval webhook error", "reason", reason)
-		writeError(w, http.StatusServiceUnavailable, "approval webhook unavailable")
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("approval notification failed: %s", detail))
 		return
 	}
 	_ = resp.Body.Close()
