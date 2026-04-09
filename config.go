@@ -59,11 +59,8 @@ type DockerConfig struct {
 }
 
 type AuthConfig struct {
-	Keys map[string]APIKeyConfig `yaml:"keys"`
-}
-
-type APIKeyConfig struct {
-	Label string `yaml:"label"`
+	AuthorizedCallers []string `yaml:"authorized_callers"`
+	TokenSecretEnv    string   `yaml:"token_secret_env"`
 }
 
 type ServicePolicy struct {
@@ -105,7 +102,7 @@ func defaults() Config {
 			LogTailMax:       500,
 			RateLimitSeconds: 10,
 		},
-		Auth:     AuthConfig{Keys: map[string]APIKeyConfig{}},
+		Auth:     AuthConfig{TokenSecretEnv: "SAFE_DOCKER_AUTH_SECRET"},
 		Projects: map[string]ProjectConfig{},
 		Logging:  LoggingConfig{Level: "info", Format: "json"},
 		Approval: ApprovalConfig{
@@ -150,16 +147,25 @@ func loadConfig(path string) (Config, error) {
 }
 
 func (c *Config) validate() error {
-	if len(c.Auth.Keys) == 0 {
-		return fmt.Errorf("auth.keys must contain at least one API key")
+	if len(c.Auth.AuthorizedCallers) == 0 {
+		return fmt.Errorf("auth.authorized_callers must contain at least one caller")
 	}
-	for key, meta := range c.Auth.Keys {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("auth.keys cannot contain empty key values")
+	seenCallers := map[string]struct{}{}
+	for _, caller := range c.Auth.AuthorizedCallers {
+		caller = strings.TrimSpace(caller)
+		if caller == "" {
+			return fmt.Errorf("auth.authorized_callers cannot contain empty values")
 		}
-		if strings.TrimSpace(meta.Label) == "" {
-			return fmt.Errorf("auth.keys[%q].label is required", key)
+		if _, exists := seenCallers[caller]; exists {
+			return fmt.Errorf("auth.authorized_callers contains duplicate caller %q", caller)
 		}
+		seenCallers[caller] = struct{}{}
+	}
+	if strings.TrimSpace(c.Auth.TokenSecretEnv) == "" {
+		return fmt.Errorf("auth.token_secret_env is required")
+	}
+	if strings.TrimSpace(os.Getenv(c.Auth.TokenSecretEnv)) == "" {
+		return fmt.Errorf("auth.token_secret_env %q is not set", c.Auth.TokenSecretEnv)
 	}
 	if len(c.Projects) == 0 {
 		return fmt.Errorf("projects must declare at least one project")

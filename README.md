@@ -25,7 +25,7 @@ One bug or prompt injection becomes host-level container control.
 
 `safe-docker` reduces blast radius by forcing every operation through:
 
-- API-key auth
+- signed caller-token auth
 - project-scoped service aliases
 - per-service, per-action policy
 - deny-by-default behavior
@@ -54,7 +54,7 @@ One bug or prompt injection becomes host-level container control.
 Auth header:
 
 ```text
-X-API-Key: <your-key>
+X-API-Key: <signed-caller-token>
 ```
 
 ## Example policy
@@ -65,9 +65,9 @@ Core shape:
 
 ```yaml
 auth:
-  keys:
-    sk_live_agent_abc123:
-      label: openclaw-agent
+  authorized_callers:
+    - openclaw-agent
+  token_secret_env: SAFE_DOCKER_AUTH_SECRET
 
 projects:
   myproject:  # Docker Compose project name
@@ -120,7 +120,7 @@ Non-goals:
 cp policy.example.yaml policy.yaml
 ```
 
-2. Edit API keys, projects, and services.
+2. Set `SAFE_DOCKER_AUTH_SECRET`, then edit authorized callers, projects, and services.
 
 3. Run it:
 
@@ -138,8 +138,18 @@ curl http://127.0.0.1:8080/health
 
 ```bash
 curl -X POST \
-  -H 'X-API-Key: sk_live_agent_abc123' \
+  -H 'X-API-Key: <signed-caller-token>' \
   http://127.0.0.1:8080/v1/projects/myproject/services/api/restart
+```
+
+Token format:
+- payload: compact JSON claims including `caller`, `exp`, and `v`
+- signature: `HMAC-SHA256(secret, canonical_payload)`
+- header value: `<base64url(payload)>.<hex(signature)>`
+
+Example payload:
+```json
+{"caller":"komodo","aud":"safe-docker","iat":1775768400,"exp":1775772000,"v":1}
 ```
 
 ## Docker Compose

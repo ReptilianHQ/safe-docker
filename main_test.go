@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 func minimalConfig() Config {
+	_ = os.Setenv("SAFE_DOCKER_AUTH_SECRET", "test-secret")
 	return Config{
 		Server: ServerConfig{ListenAddr: ":8080"},
 		Docker: DockerConfig{
@@ -26,9 +29,8 @@ func minimalConfig() Config {
 			LogTailMax:     500,
 		},
 		Auth: AuthConfig{
-			Keys: map[string]APIKeyConfig{
-				"test-key": {Label: "test-agent"},
-			},
+			AuthorizedCallers: []string{"test-agent"},
+			TokenSecretEnv:    "SAFE_DOCKER_AUTH_SECRET",
 		},
 		Projects: map[string]ProjectConfig{
 			"testproj": {
@@ -44,7 +46,7 @@ func minimalConfig() Config {
 				},
 			},
 		},
-		Logging: LoggingConfig{Level: "error", Format: "json"},
+			Logging: LoggingConfig{Level: "error", Format: "json"},
 	}
 }
 
@@ -58,22 +60,39 @@ func stubServer(cfg Config) *Server {
 	}
 }
 
-func get(t *testing.T, srv *Server, path, apiKey string) *httptest.ResponseRecorder {
+func signedTestToken(t *testing.T, caller string) string {
+	t.Helper()
+	tok := signedCallerToken{Caller: caller, Aud: "safe-docker", Iat: time.Now().Unix(), Exp: time.Now().Add(time.Hour).Unix(), V: 1}
+	payload, err := json.Marshal(tok)
+	if err != nil {
+		t.Fatalf("marshal token: %v", err)
+	}
+	canonical, err := canonicalTokenPayload(tok)
+	if err != nil {
+		t.Fatalf("canonicalize token: %v", err)
+	}
+	mac := hmac.New(sha256.New, []byte(os.Getenv("SAFE_DOCKER_AUTH_SECRET")))
+	mac.Write(canonical)
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + sig
+}
+
+func get(t *testing.T, srv *Server, path, caller string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
+	if caller != "" {
+		req.Header.Set("X-API-Key", signedTestToken(t, caller))
 	}
 	rr := httptest.NewRecorder()
 	srv.router().ServeHTTP(rr, req)
 	return rr
 }
 
-func post(t *testing.T, srv *Server, path, apiKey string) *httptest.ResponseRecorder {
+func post(t *testing.T, srv *Server, path, caller string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, nil)
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
+	if caller != "" {
+		req.Header.Set("X-API-Key", signedTestToken(t, caller))
 	}
 	rr := httptest.NewRecorder()
 	srv.router().ServeHTTP(rr, req)
@@ -100,23 +119,23 @@ func TestConfigValidate_OK(t *testing.T) {
 
 func TestConfigValidate_NoKeys(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Auth.Keys = map[string]APIKeyConfig{}
+	cfg.Auth.AuthorizedCallers = []string{}
 	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error for empty auth.keys")
+		t.Fatal("expected error for empty auth.authorized_callers")
 	}
 }
 
 func TestConfigValidate_EmptyKeyValue(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Auth.Keys["  "] = APIKeyConfig{Label: "spacey"}
+	cfg.Auth.AuthorizedCallers = append(cfg.Auth.AuthorizedCallers, "  ")
 	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error for whitespace-only key")
+		t.Fatal("expected error for whitespace-only caller")
 	}
 }
 
 func TestConfigValidate_MissingKeyLabel(t *testing.T) {
 	cfg := minimalConfig()
-	cfg.Auth.Keys["some-key"] = APIKeyConfig{Label: ""}
+	cfg.Auth.TokenSecretEnv = ""
 	if err := cfg.validate(); err == nil {
 		t.Fatal("expected error for key with empty label")
 	}
@@ -273,7 +292,7 @@ func TestAuth_WhitespaceOnlyKey(t *testing.T) {
 
 func TestAuth_ValidKey(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects", "test-key")
+	rr := get(t, srv, "/v1/projects", "test-agent")
 	// 200 — no docker call needed for list handler
 	if rr.Code != http.StatusOK {
 		t.Errorf("want 200 with valid key, got %d", rr.Code)
@@ -299,7 +318,7 @@ func TestHealth_NoAuth(t *testing.T) {
 
 func TestListProjects_ReturnsAll(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects", "test-key")
+	rr := get(t, srv, "/v1/projects", "test-agent")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
@@ -317,7 +336,7 @@ func TestListProjects_ReturnsAll(t *testing.T) {
 
 func TestListServices_ReturnsAll(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects/testproj/services", "test-key")
+	rr := get(t, srv, "/v1/projects/testproj/services", "test-agent")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
@@ -333,7 +352,7 @@ func TestListServices_ReturnsAll(t *testing.T) {
 
 func TestListServices_UnknownProject(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects/unknown/services", "test-key")
+	rr := get(t, srv, "/v1/projects/unknown/services", "test-agent")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("want 404 for unknown project, got %d", rr.Code)
 	}
@@ -341,7 +360,7 @@ func TestListServices_UnknownProject(t *testing.T) {
 
 func TestListServices_ContentType(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects/testproj/services", "test-key")
+	rr := get(t, srv, "/v1/projects/testproj/services", "test-agent")
 	ct := rr.Header().Get("Content-Type")
 	if !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("want application/json, got %q", ct)
@@ -352,7 +371,7 @@ func TestListServices_ContentType(t *testing.T) {
 
 func TestAuthorize_UnknownProject(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects/unknown/services/myapp/status", "test-key")
+	rr := get(t, srv, "/v1/projects/unknown/services/myapp/status", "test-agent")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("want 404 for unknown project, got %d", rr.Code)
 	}
@@ -360,7 +379,7 @@ func TestAuthorize_UnknownProject(t *testing.T) {
 
 func TestAuthorize_UnknownService(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects/testproj/services/ghost/status", "test-key")
+	rr := get(t, srv, "/v1/projects/testproj/services/ghost/status", "test-agent")
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("want 404 for unknown service, got %d", rr.Code)
 	}
@@ -369,7 +388,7 @@ func TestAuthorize_UnknownService(t *testing.T) {
 func TestAuthorize_ActionNotAllowed(t *testing.T) {
 	// "readonly" service only allows status + logs, not restart
 	srv := stubServer(minimalConfig())
-	rr := post(t, srv, "/v1/projects/testproj/services/readonly/restart", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/readonly/restart", "test-agent")
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("want 403 when action not in policy, got %d", rr.Code)
 	}
@@ -382,7 +401,7 @@ func TestAuthorize_ActionNotAllowed(t *testing.T) {
 func TestAuthorize_InvalidServiceName(t *testing.T) {
 	srv := stubServer(minimalConfig())
 	// Uppercase fails the validServiceName regex (only lowercase allowed)
-	rr := get(t, srv, "/v1/projects/testproj/services/INVALID/status", "test-key")
+	rr := get(t, srv, "/v1/projects/testproj/services/INVALID/status", "test-agent")
 	// Expect 400 for invalid service name
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("want 400 for invalid service name (uppercase), got %d", rr.Code)
@@ -397,13 +416,13 @@ func TestRateLimit_SecondRequestBlocked(t *testing.T) {
 	srv := stubServer(cfg)
 
 	// First request should pass authorization (will 404 on container, that's fine).
-	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-agent")
 	if rr1.Code == http.StatusTooManyRequests {
 		t.Error("first request should not be rate limited")
 	}
 
 	// Second request immediately should be rate limited.
-	rr2 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	rr2 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-agent")
 	if rr2.Code != http.StatusTooManyRequests {
 		t.Errorf("want 429, got %d", rr2.Code)
 	}
@@ -415,14 +434,14 @@ func TestRateLimit_DifferentServicesNotBlocked(t *testing.T) {
 	srv := stubServer(cfg)
 
 	// Hit myapp — should pass.
-	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-agent")
 	if rr1.Code == http.StatusTooManyRequests {
 		t.Error("first request should not be rate limited")
 	}
 
 	// Hit readonly (needs restart action added) — should not be blocked by myapp's cooldown.
 	cfg.Projects["testproj"].Services["other"] = ServicePolicy{Actions: []string{"status", "restart"}}
-	rr2 := post(t, srv, "/v1/projects/testproj/services/other/restart", "test-key")
+	rr2 := post(t, srv, "/v1/projects/testproj/services/other/restart", "test-agent")
 	if rr2.Code == http.StatusTooManyRequests {
 		t.Error("different service should not be rate limited")
 	}
@@ -434,8 +453,8 @@ func TestRateLimit_ReadActionsNotLimited(t *testing.T) {
 	srv := stubServer(cfg)
 
 	// status is a read action — should never be rate limited.
-	get(t, srv, "/v1/projects/testproj/services/myapp/status", "test-key")
-	rr := get(t, srv, "/v1/projects/testproj/services/myapp/status", "test-key")
+	get(t, srv, "/v1/projects/testproj/services/myapp/status", "test-agent")
+	rr := get(t, srv, "/v1/projects/testproj/services/myapp/status", "test-agent")
 	if rr.Code == http.StatusTooManyRequests {
 		t.Error("read actions should not be rate limited")
 	}
@@ -447,8 +466,8 @@ func TestRateLimit_DisabledWhenZero(t *testing.T) {
 	srv := stubServer(cfg)
 
 	// Two rapid requests should both pass (will 404 on container, that's fine).
-	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
-	rr2 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-agent")
+	rr2 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-agent")
 	if rr1.Code == http.StatusTooManyRequests || rr2.Code == http.StatusTooManyRequests {
 		t.Error("rate limiting should be disabled when rate_limit_seconds is 0")
 	}
@@ -459,7 +478,7 @@ func TestRateLimit_DisabledWhenZero(t *testing.T) {
 func TestMethodEnforcement_StatusMustBeGET(t *testing.T) {
 	srv := stubServer(minimalConfig())
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/testproj/services/myapp/status", nil)
-	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-API-Key", "test-agent")
 	rr := httptest.NewRecorder()
 	srv.router().ServeHTTP(rr, req)
 	// chi returns 405 for wrong method on a registered route
@@ -470,7 +489,7 @@ func TestMethodEnforcement_StatusMustBeGET(t *testing.T) {
 
 func TestMethodEnforcement_RestartMustBePOST(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	rr := get(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-agent")
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("want 405 for GET on restart endpoint, got %d", rr.Code)
 	}
@@ -579,7 +598,7 @@ func TestValidServiceNameRegex(t *testing.T) {
 // ─── HITL approval helpers ───────────────────────────────────────────────────
 
 // postBody makes an authenticated POST with a JSON body.
-func postBody(t *testing.T, srv *Server, path, apiKey string, body any) *httptest.ResponseRecorder {
+func postBody(t *testing.T, srv *Server, path, caller string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -587,8 +606,8 @@ func postBody(t *testing.T, srv *Server, path, apiKey string, body any) *httptes
 	}
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
+	if caller != "" {
+		req.Header.Set("X-API-Key", signedTestToken(t, caller))
 	}
 	rr := httptest.NewRecorder()
 	srv.router().ServeHTTP(rr, req)
@@ -617,7 +636,7 @@ func TestDangerous_NoWebhook(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("want 403 when no webhook configured, got %d", rr.Code)
 	}
@@ -645,7 +664,7 @@ func TestDangerous_WebhookReceivesPayload(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusAccepted {
 		t.Errorf("want 202, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -697,7 +716,7 @@ func TestDangerous_WebhookSignature(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("want 202, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -734,7 +753,7 @@ func TestDangerous_WebhookNoSignatureWithoutSecret(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("want 202, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -756,7 +775,7 @@ func TestDangerous_WebhookFailure(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("want 503 on webhook failure, got %d", rr.Code)
 	}
@@ -776,7 +795,7 @@ func TestApprove_MissingKey(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{"approval_key": "nonexistent"})
+	rr := postBody(t, srv, "/v1/approve", "test-agent", map[string]string{"approval_key": "nonexistent"})
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("want 404 for missing token, got %d", rr.Code)
 	}
@@ -796,7 +815,7 @@ func TestApprove_ExpiredToken(t *testing.T) {
 		},
 	}
 
-	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{"approval_key": "expired-token"})
+	rr := postBody(t, srv, "/v1/approve", "test-agent", map[string]string{"approval_key": "expired-token"})
 	if rr.Code != http.StatusGone {
 		t.Errorf("want 410 for expired token, got %d", rr.Code)
 	}
@@ -816,7 +835,7 @@ func TestApprove_UsedToken(t *testing.T) {
 		},
 	}
 
-	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{"approval_key": "used-token"})
+	rr := postBody(t, srv, "/v1/approve", "test-agent", map[string]string{"approval_key": "used-token"})
 	if rr.Code != http.StatusConflict {
 		t.Errorf("want 409 for used token, got %d", rr.Code)
 	}
@@ -828,7 +847,7 @@ func TestApprove_EmptyKey(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := postBody(t, srv, "/v1/approve", "test-key", map[string]string{})
+	rr := postBody(t, srv, "/v1/approve", "test-agent", map[string]string{})
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("want 400 for missing approval_key, got %d", rr.Code)
 	}
@@ -854,7 +873,7 @@ func TestApprove_MalformedJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/approve", strings.NewReader("{{{"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-API-Key", "test-agent")
 	rr := httptest.NewRecorder()
 	srv.router().ServeHTTP(rr, req)
 
@@ -874,7 +893,7 @@ func TestDangerous_InvalidWebhookScheme(t *testing.T) {
 	srv := stubServer(cfg)
 	srv.approvals = make(map[string]*pendingApproval)
 
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("want 500 for invalid webhook scheme, got %d", rr.Code)
 	}
@@ -932,7 +951,7 @@ func TestDangerous_TTLClamped(t *testing.T) {
 	srv.approvals = make(map[string]*pendingApproval)
 
 	now := time.Now()
-	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-agent")
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("want 202, got %d", rr.Code)
 	}

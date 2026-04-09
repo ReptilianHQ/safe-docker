@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -171,33 +169,6 @@ func (s *Server) structuredLogger() func(http.Handler) http.Handler {
 			next.ServeHTTP(ww, r)
 		})
 	}
-}
-
-func (s *Server) requireAPIKey(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := r.Header.Get("X-API-Key")
-		meta, ok := s.cfg.Auth.Keys[key]
-		if strings.TrimSpace(key) == "" {
-			writeError(w, http.StatusUnauthorized, "X-API-Key header required")
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusForbidden, "invalid API key")
-			return
-		}
-		ctx := context.WithValue(r.Context(), callerContextKey{}, meta.Label)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-type callerContextKey struct{}
-
-func callerFromContext(ctx context.Context) string {
-	caller, _ := ctx.Value(callerContextKey{}).(string)
-	if caller == "" {
-		return "unknown"
-	}
-	return caller
 }
 
 func (s *Server) audit(r *http.Request, action, service, containerName, result, reason string) {

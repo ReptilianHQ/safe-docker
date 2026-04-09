@@ -11,10 +11,9 @@ docker:
   rate_limit_seconds: 10  # Per-service cooldown for write actions (0 to disable, env: SAFE_DOCKER_RATE_LIMIT_SECONDS)
 
 auth:
-  keys:
-    # Replace with your actual API key (generate with: openssl rand -hex 32)
-    your-api-key-here:
-      label: my-agent
+  authorized_callers:
+    - my-agent
+  token_secret_env: SAFE_DOCKER_AUTH_SECRET
 
 # ---------------------------------------------------------------------------
 # Project policies
