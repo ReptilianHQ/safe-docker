@@ -22,6 +22,8 @@ type Server struct {
 	log         *slog.Logger
 	approvalsMu sync.Mutex
 	approvals   map[string]*pendingApproval
+	rateMu      sync.Mutex
+	lastAction  map[string]time.Time // "project/service" → last action time
 }
 
 type auditEntry struct {
@@ -106,11 +108,12 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 	}
 
 	srv := &Server{
-		cfg:       cfg,
-		docker:    dockerClient,
-		compose:   composeClient,
-		log:       log,
-		approvals: make(map[string]*pendingApproval),
+		cfg:        cfg,
+		docker:     dockerClient,
+		compose:    composeClient,
+		log:        log,
+		approvals:  make(map[string]*pendingApproval),
+		lastAction: make(map[string]time.Time),
 	}
 
 	// Background sweeper: remove expired tokens every 60 seconds.

@@ -8,6 +8,7 @@ docker:
   timeout_seconds: 15
   log_tail_default: 100
   log_tail_max: 500
+  rate_limit_seconds: 10  # Per-service cooldown for write actions (0 to disable, env: SAFE_DOCKER_RATE_LIMIT_SECONDS)
 
 auth:
   keys:

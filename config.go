@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,8 +53,9 @@ type ServerConfig struct {
 type DockerConfig struct {
 	SocketPath     string `yaml:"socket_path"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
-	LogTailDefault int    `yaml:"log_tail_default"`
-	LogTailMax     int    `yaml:"log_tail_max"`
+	LogTailDefault   int `yaml:"log_tail_default"`
+	LogTailMax       int `yaml:"log_tail_max"`
+	RateLimitSeconds int `yaml:"rate_limit_seconds"`
 }
 
 type AuthConfig struct {
@@ -96,10 +98,11 @@ func defaults() Config {
 	return Config{
 		Server: ServerConfig{ListenAddr: "127.0.0.1:8080"},
 		Docker: DockerConfig{
-			SocketPath:     "/var/run/docker.sock",
-			TimeoutSeconds: 15,
-			LogTailDefault: 100,
-			LogTailMax:     500,
+			SocketPath:       "/var/run/docker.sock",
+			TimeoutSeconds:   15,
+			LogTailDefault:   100,
+			LogTailMax:       500,
+			RateLimitSeconds: 10,
 		},
 		Auth:     AuthConfig{Keys: map[string]APIKeyConfig{}},
 		Projects: map[string]ProjectConfig{},
@@ -130,6 +133,15 @@ func loadConfig(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("parse config %q: %w", path, err)
 	}
+	// Env var override: SAFE_DOCKER_RATE_LIMIT_SECONDS
+	if v := os.Getenv("SAFE_DOCKER_RATE_LIMIT_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return cfg, fmt.Errorf("SAFE_DOCKER_RATE_LIMIT_SECONDS: %w", err)
+		}
+		cfg.Docker.RateLimitSeconds = n
+	}
+
 	if err := cfg.validate(); err != nil {
 		return cfg, err
 	}

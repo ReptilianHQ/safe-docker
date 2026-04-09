@@ -52,8 +52,9 @@ func minimalConfig() Config {
 // tests that don't exercise Docker code paths (auth, routing, validation).
 func stubServer(cfg Config) *Server {
 	return &Server{
-		cfg: cfg,
-		log: buildLogger(cfg.Logging),
+		cfg:        cfg,
+		log:        buildLogger(cfg.Logging),
+		lastAction: make(map[string]time.Time),
 	}
 }
 
@@ -214,6 +215,9 @@ func TestConfigDefaults(t *testing.T) {
 	}
 	if cfg.Docker.TimeoutSeconds != 15 {
 		t.Errorf("expected timeout 15, got %d", cfg.Docker.TimeoutSeconds)
+	}
+	if cfg.Docker.RateLimitSeconds != 10 {
+		t.Errorf("expected rate_limit_seconds 10, got %d", cfg.Docker.RateLimitSeconds)
 	}
 }
 
@@ -382,6 +386,71 @@ func TestAuthorize_InvalidServiceName(t *testing.T) {
 	// Expect 400 for invalid service name
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("want 400 for invalid service name (uppercase), got %d", rr.Code)
+	}
+}
+
+// ─── Rate limiting ───────────────────────────────────────────────────────────
+
+func TestRateLimit_SecondRequestBlocked(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Docker.RateLimitSeconds = 5
+	srv := stubServer(cfg)
+
+	// First request should pass authorization (will 404 on container, that's fine).
+	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	if rr1.Code == http.StatusTooManyRequests {
+		t.Error("first request should not be rate limited")
+	}
+
+	// Second request immediately should be rate limited.
+	rr2 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	if rr2.Code != http.StatusTooManyRequests {
+		t.Errorf("want 429, got %d", rr2.Code)
+	}
+}
+
+func TestRateLimit_DifferentServicesNotBlocked(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Docker.RateLimitSeconds = 5
+	srv := stubServer(cfg)
+
+	// Hit myapp — should pass.
+	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	if rr1.Code == http.StatusTooManyRequests {
+		t.Error("first request should not be rate limited")
+	}
+
+	// Hit readonly (needs restart action added) — should not be blocked by myapp's cooldown.
+	cfg.Projects["testproj"].Services["other"] = ServicePolicy{Actions: []string{"status", "restart"}}
+	rr2 := post(t, srv, "/v1/projects/testproj/services/other/restart", "test-key")
+	if rr2.Code == http.StatusTooManyRequests {
+		t.Error("different service should not be rate limited")
+	}
+}
+
+func TestRateLimit_ReadActionsNotLimited(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Docker.RateLimitSeconds = 5
+	srv := stubServer(cfg)
+
+	// status is a read action — should never be rate limited.
+	get(t, srv, "/v1/projects/testproj/services/myapp/status", "test-key")
+	rr := get(t, srv, "/v1/projects/testproj/services/myapp/status", "test-key")
+	if rr.Code == http.StatusTooManyRequests {
+		t.Error("read actions should not be rate limited")
+	}
+}
+
+func TestRateLimit_DisabledWhenZero(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Docker.RateLimitSeconds = 0
+	srv := stubServer(cfg)
+
+	// Two rapid requests should both pass (will 404 on container, that's fine).
+	rr1 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	rr2 := post(t, srv, "/v1/projects/testproj/services/myapp/restart", "test-key")
+	if rr1.Code == http.StatusTooManyRequests || rr2.Code == http.StatusTooManyRequests {
+		t.Error("rate limiting should be disabled when rate_limit_seconds is 0")
 	}
 }
 

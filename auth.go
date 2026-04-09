@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -41,6 +43,22 @@ func (s *Server) authorizeAction(w http.ResponseWriter, r *http.Request, action 
 		s.audit(r, action, service, policy.Container, "denied", "action not allowed")
 		writeError(w, http.StatusForbidden, "action not allowed")
 		return "", "", policy, false
+	}
+	// Rate limit write actions (not status/logs).
+	if cooldown := s.cfg.Docker.RateLimitSeconds; cooldown > 0 && action != "status" && action != "logs" {
+		key := project + "/" + service
+		limit := time.Duration(cooldown) * time.Second
+		s.rateMu.Lock()
+		last, exists := s.lastAction[key]
+		if exists && time.Since(last) < limit {
+			s.rateMu.Unlock()
+			remaining := limit - time.Since(last)
+			s.audit(r, action, service, policy.Container, "denied", "rate limited")
+			writeError(w, http.StatusTooManyRequests, fmt.Sprintf("rate limited — retry in %ds", int(remaining.Seconds())+1))
+			return "", "", policy, false
+		}
+		s.lastAction[key] = time.Now()
+		s.rateMu.Unlock()
 	}
 	return project, service, policy, true
 }
