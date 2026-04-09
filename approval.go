@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -77,6 +79,12 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if s.cfg.Approval.WebhookSecret != "" {
+		mac := hmac.New(sha256.New, []byte(s.cfg.Approval.WebhookSecret))
+		mac.Write(payloadBytes)
+		sig := hex.EncodeToString(mac.Sum(nil))
+		req.Header.Set("X-Safe-Docker-Signature", "sha256="+sig)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode >= 500 {

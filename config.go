@@ -78,6 +78,7 @@ type LoggingConfig struct {
 // ApprovalConfig controls the human-in-the-loop webhook for dangerous actions.
 type ApprovalConfig struct {
 	WebhookURL      string `yaml:"webhook_url"`
+	WebhookSecret   string `yaml:"webhook_secret"`
 	TokenTTLSecs    int    `yaml:"token_ttl_seconds"`
 	TokenTTLMaxSecs int    `yaml:"token_ttl_max_seconds"`
 }

@@ -78,5 +78,6 @@ logging:
 #
 # approval:
 #   webhook_url: "https://hooks.example.com/safe-docker/approve"
+#   webhook_secret: "your-secret-here"  # HMAC-SHA256 signing key (X-Safe-Docker-Signature header)
 #   token_ttl_seconds: 120      # How long the token is valid (default: 120)
 #   token_ttl_max_seconds: 600  # Maximum TTL cap (default: 600)

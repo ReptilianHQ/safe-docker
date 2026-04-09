@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -604,6 +607,70 @@ func TestDangerous_WebhookReceivesPayload(t *testing.T) {
 	}
 	if receivedPayload["service"] != "danger" {
 		t.Errorf("want service=danger, got %q", receivedPayload["service"])
+	}
+}
+
+// TestDangerous_WebhookSignature verifies HMAC-SHA256 signature is sent when webhook_secret is configured.
+func TestDangerous_WebhookSignature(t *testing.T) {
+	var sigHeader string
+	var receivedBody []byte
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sigHeader = r.Header.Get("X-Safe-Docker-Signature")
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookSrv.Close()
+
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = webhookSrv.URL
+	cfg.Approval.WebhookSecret = "test-secret"
+	cfg.Approval.TokenTTLSecs = 120
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Signature header must be present and valid.
+	if sigHeader == "" {
+		t.Fatal("X-Safe-Docker-Signature header missing")
+	}
+	if !strings.HasPrefix(sigHeader, "sha256=") {
+		t.Fatalf("signature should start with sha256=, got %q", sigHeader)
+	}
+
+	// Verify the HMAC.
+	mac := hmac.New(sha256.New, []byte("test-secret"))
+	mac.Write(receivedBody)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if sigHeader != expected {
+		t.Errorf("signature mismatch:\n  got:  %s\n  want: %s", sigHeader, expected)
+	}
+}
+
+// TestDangerous_WebhookNoSignatureWithoutSecret verifies no signature header when secret is empty.
+func TestDangerous_WebhookNoSignatureWithoutSecret(t *testing.T) {
+	var sigHeader string
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sigHeader = r.Header.Get("X-Safe-Docker-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookSrv.Close()
+
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = webhookSrv.URL
+	cfg.Approval.TokenTTLSecs = 120
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build", "test-key")
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if sigHeader != "" {
+		t.Errorf("signature header should be absent without secret, got %q", sigHeader)
 	}
 }
 
