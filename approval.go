@@ -70,11 +70,14 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 	s.approvalsMu.Unlock()
 
 	// POST to webhook.
+	caller := callerFromContext(r.Context())
+
 	webhookPayload := map[string]any{
 		"approval_key": token,
 		"action":       action,
 		"service":      service,
 		"project":      project,
+		"caller":       caller,
 		"expires_at":   expiresAt.UTC().Format(time.RFC3339),
 		"message":      fmt.Sprintf("Agent requested: docker compose %s %s", action, service),
 	}
