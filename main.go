@@ -42,7 +42,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Info("safe-docker listening", "addr", cfg.Server.ListenAddr)
+		log.Info("safe-docker listening", "addr", cfg.Server.ListenAddr, "service", "safe-docker")
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "error", err)
 			os.Exit(1)
