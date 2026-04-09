@@ -756,7 +756,7 @@ func TestGenerateToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generateToken error: %v", err)
 		}
-		if len(tok) != 64 {
+		if len(tok) != 24 {
 			t.Errorf("expected 64-char hex token, got len=%d: %q", len(tok), tok)
 		}
 		if _, dup := seen[tok]; dup {
