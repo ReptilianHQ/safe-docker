@@ -425,6 +425,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
+        - name: X-Request-Agent
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional opaque requester identity to echo in approval webhook payloads (for example, an agent name like `komodo`).
       responses:
         "200":
           description: Recreate completed
@@ -450,6 +456,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
+        - name: X-Request-Agent
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional opaque requester identity to echo in approval webhook payloads (for example, an agent name like `komodo`).
       responses:
         "200":
           description: Build completed

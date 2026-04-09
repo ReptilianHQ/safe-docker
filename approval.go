@@ -44,12 +44,15 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 
+	requestAgent := strings.TrimSpace(r.Header.Get("X-Request-Agent"))
+
 	ap := &pendingApproval{
-		Action:    action,
-		Project:   project,
-		Service:   service,
-		ExpiresAt: expiresAt,
-		Used:      false,
+		Action:       action,
+		Project:      project,
+		Service:      service,
+		RequestAgent: requestAgent,
+		ExpiresAt:    expiresAt,
+		Used:         false,
 	}
 	s.approvalsMu.Lock()
 	s.approvals[token] = ap
@@ -63,6 +66,9 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		"project":      project,
 		"expires_at":   expiresAt.UTC().Format(time.RFC3339),
 		"message":      fmt.Sprintf("Agent requested: docker compose %s %s", action, service),
+	}
+	if requestAgent != "" {
+		webhookPayload["request_agent"] = requestAgent
 	}
 	payloadBytes, _ := json.Marshal(webhookPayload)
 
@@ -115,6 +121,7 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		"action", action,
 		"project", project,
 		"service", service,
+		"request_agent", requestAgent,
 		"expires_at", expiresAt.UTC().Format(time.RFC3339),
 		"caller", callerFromContext(r.Context()),
 	)
