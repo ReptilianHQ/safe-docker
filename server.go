@@ -169,3 +169,28 @@ func callerFromContext(ctx context.Context) string {
 	}
 	return caller
 }
+
+func (s *Server) audit(r *http.Request, action, service, containerName, result, reason string) {
+	entry := auditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Caller:    callerFromContext(r.Context()),
+		Action:    action,
+		Service:   service,
+		Container: containerName,
+		Result:    result,
+		Reason:    reason,
+		RequestID: middleware.GetReqID(r.Context()),
+		Remote:    r.RemoteAddr,
+	}
+	s.log.Info("audit",
+		"timestamp", entry.Timestamp,
+		"caller", entry.Caller,
+		"action", entry.Action,
+		"service", entry.Service,
+		"container", entry.Container,
+		"result", entry.Result,
+		"reason", entry.Reason,
+		"request_id", entry.RequestID,
+		"remote_addr", entry.Remote,
+	)
+}
