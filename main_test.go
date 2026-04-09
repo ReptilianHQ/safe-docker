@@ -60,9 +60,8 @@ func stubServer(cfg Config) *Server {
 	}
 }
 
-func signedTestToken(t *testing.T, caller string) string {
+func buildSignedTestToken(t *testing.T, tok signedCallerToken, secret string) string {
 	t.Helper()
-	tok := signedCallerToken{Caller: caller, Aud: "safe-docker", Iat: time.Now().Unix(), Exp: time.Now().Add(time.Hour).Unix(), V: 1}
 	payload, err := json.Marshal(tok)
 	if err != nil {
 		t.Fatalf("marshal token: %v", err)
@@ -71,10 +70,16 @@ func signedTestToken(t *testing.T, caller string) string {
 	if err != nil {
 		t.Fatalf("canonicalize token: %v", err)
 	}
-	mac := hmac.New(sha256.New, []byte(os.Getenv("SAFE_DOCKER_AUTH_SECRET")))
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(canonical)
 	sig := hex.EncodeToString(mac.Sum(nil))
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + sig
+}
+
+func signedTestToken(t *testing.T, caller string) string {
+	t.Helper()
+	tok := signedCallerToken{Caller: caller, Aud: "safe-docker", Iat: time.Now().Unix(), Exp: time.Now().Add(time.Hour).Unix(), V: 1}
+	return buildSignedTestToken(t, tok, os.Getenv("SAFE_DOCKER_AUTH_SECRET"))
 }
 
 func get(t *testing.T, srv *Server, path, caller string) *httptest.ResponseRecorder {
@@ -117,7 +122,7 @@ func TestConfigValidate_OK(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_NoKeys(t *testing.T) {
+func TestConfigValidate_NoAuthorizedCallers(t *testing.T) {
 	cfg := minimalConfig()
 	cfg.Auth.AuthorizedCallers = []string{}
 	if err := cfg.validate(); err == nil {
@@ -125,7 +130,7 @@ func TestConfigValidate_NoKeys(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_EmptyKeyValue(t *testing.T) {
+func TestConfigValidate_EmptyAuthorizedCaller(t *testing.T) {
 	cfg := minimalConfig()
 	cfg.Auth.AuthorizedCallers = append(cfg.Auth.AuthorizedCallers, "  ")
 	if err := cfg.validate(); err == nil {
@@ -133,11 +138,29 @@ func TestConfigValidate_EmptyKeyValue(t *testing.T) {
 	}
 }
 
-func TestConfigValidate_MissingKeyLabel(t *testing.T) {
+func TestConfigValidate_MissingTokenSecretEnv(t *testing.T) {
 	cfg := minimalConfig()
 	cfg.Auth.TokenSecretEnv = ""
 	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error for key with empty label")
+		t.Fatal("expected error for missing token secret env")
+	}
+}
+
+func TestConfigValidate_DuplicateAuthorizedCaller(t *testing.T) {
+	cfg := minimalConfig()
+	cfg.Auth.AuthorizedCallers = append(cfg.Auth.AuthorizedCallers, "test-agent")
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for duplicate authorized caller")
+	}
+}
+
+func TestConfigValidate_TokenSecretEnvUnset(t *testing.T) {
+	cfg := minimalConfig()
+	old := os.Getenv(cfg.Auth.TokenSecretEnv)
+	_ = os.Unsetenv(cfg.Auth.TokenSecretEnv)
+	defer func() { _ = os.Setenv(cfg.Auth.TokenSecretEnv, old) }()
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when token secret env is unset")
 	}
 }
 
@@ -274,9 +297,12 @@ func TestAuth_NoKey(t *testing.T) {
 	}
 }
 
-func TestAuth_WrongKey(t *testing.T) {
+func TestAuth_InvalidToken(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects", "wrong-key")
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("X-API-Key", "wrong-key")
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("want 403, got %d", rr.Code)
 	}
@@ -284,9 +310,60 @@ func TestAuth_WrongKey(t *testing.T) {
 
 func TestAuth_WhitespaceOnlyKey(t *testing.T) {
 	srv := stubServer(minimalConfig())
-	rr := get(t, srv, "/v1/projects", "   ")
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("X-API-Key", "   ")
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("want 401 for whitespace-only key, got %d", rr.Code)
+	}
+}
+
+func TestAuth_ExpiredToken(t *testing.T) {
+	srv := stubServer(minimalConfig())
+	tok := signedCallerToken{Caller: "test-agent", Aud: "safe-docker", Iat: time.Now().Add(-2 * time.Hour).Unix(), Exp: time.Now().Add(-time.Minute).Unix(), V: 1}
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("X-API-Key", buildSignedTestToken(t, tok, os.Getenv("SAFE_DOCKER_AUTH_SECRET")))
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("want 403 for expired token, got %d", rr.Code)
+	}
+}
+
+func TestAuth_WrongAudience(t *testing.T) {
+	srv := stubServer(minimalConfig())
+	tok := signedCallerToken{Caller: "test-agent", Aud: "something-else", Iat: time.Now().Unix(), Exp: time.Now().Add(time.Hour).Unix(), V: 1}
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("X-API-Key", buildSignedTestToken(t, tok, os.Getenv("SAFE_DOCKER_AUTH_SECRET")))
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("want 403 for wrong audience, got %d", rr.Code)
+	}
+}
+
+func TestAuth_UnauthorizedCaller(t *testing.T) {
+	srv := stubServer(minimalConfig())
+	tok := signedCallerToken{Caller: "komodo", Aud: "safe-docker", Iat: time.Now().Unix(), Exp: time.Now().Add(time.Hour).Unix(), V: 1}
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("X-API-Key", buildSignedTestToken(t, tok, os.Getenv("SAFE_DOCKER_AUTH_SECRET")))
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("want 403 for unauthorized caller, got %d", rr.Code)
+	}
+}
+
+func TestAuth_InvalidSignature(t *testing.T) {
+	srv := stubServer(minimalConfig())
+	tok := signedCallerToken{Caller: "test-agent", Aud: "safe-docker", Iat: time.Now().Unix(), Exp: time.Now().Add(time.Hour).Unix(), V: 1}
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("X-API-Key", buildSignedTestToken(t, tok, "wrong-secret"))
+	rr := httptest.NewRecorder()
+	srv.router().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("want 403 for invalid signature, got %d", rr.Code)
 	}
 }
 
