@@ -1,4 +1,4 @@
-name: Publish Docker image (baseline)
+name: Publish Docker image (cachewarm)
 
 on:
   push:
@@ -9,10 +9,10 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  VARIANT: baseline
+  VARIANT: cachewarm
 
 concurrency:
-  group: publish-baseline-${{ github.ref }}
+  group: publish-cachewarm-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -107,9 +107,73 @@ jobs:
       - name: Test
         run: go test -v -race ./...
 
+  warm-amd64-cache:
+    name: Warm amd64 Docker cache
+    needs: [tidy-if-needed]
+    if: github.event_name == 'workflow_dispatch' || needs.tidy-if-needed.outputs.changed != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm amd64 build cache through builder stage
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: build
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha,scope=publish-cachewarm-amd64
+          cache-to: type=gha,mode=max,scope=publish-cachewarm-amd64
+
+  warm-arm64-cache:
+    name: Warm arm64 Docker cache
+    needs: [tidy-if-needed]
+    if: github.event_name == 'workflow_dispatch' || needs.tidy-if-needed.outputs.changed != 'true'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm arm64 build cache through builder stage
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: build
+          push: false
+          platforms: linux/arm64
+          cache-from: type=gha,scope=publish-cachewarm-arm64
+          cache-to: type=gha,mode=max,scope=publish-cachewarm-arm64
+
   build-amd64:
     name: Build amd64 image
-    needs: [lint, test]
+    needs: [lint, test, warm-amd64-cache]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -153,12 +217,12 @@ jobs:
           provenance: false
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}-amd64
-          cache-from: type=gha,scope=publish-baseline-amd64
-          cache-to: type=gha,mode=max,scope=publish-baseline-amd64
+          cache-from: type=gha,scope=publish-cachewarm-amd64
+          cache-to: type=gha,mode=max,scope=publish-cachewarm-amd64
 
   build-arm64:
     name: Build arm64 image
-    needs: [lint, test]
+    needs: [lint, test, warm-arm64-cache]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -202,8 +266,8 @@ jobs:
           provenance: false
           platforms: linux/arm64
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}-arm64
-          cache-from: type=gha,scope=publish-baseline-arm64
-          cache-to: type=gha,mode=max,scope=publish-baseline-arm64
+          cache-from: type=gha,scope=publish-cachewarm-arm64
+          cache-to: type=gha,mode=max,scope=publish-cachewarm-arm64
 
   publish-manifest:
     name: Publish multi-arch manifest
