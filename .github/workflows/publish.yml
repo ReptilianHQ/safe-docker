@@ -54,15 +54,97 @@ jobs:
           git commit -m "chore: tidy go modules"
           git push
 
-  build-and-push:
-    name: Build and push multi-arch image
+  lint:
+    name: Lint
+    needs: [tidy-if-needed]
+    if: github.event_name == 'workflow_dispatch' || needs.tidy-if-needed.outputs.changed != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Tidy dependencies
+        run: go mod tidy
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11
+
+  test:
+    name: Test
+    needs: [tidy-if-needed]
+    if: github.event_name == 'workflow_dispatch' || needs.tidy-if-needed.outputs.changed != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Tidy dependencies
+        run: go mod tidy
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -v -race ./...
+
+  warm-docker-cache:
+    name: Warm Docker cache
     needs: [tidy-if-needed]
     if: github.event_name == 'workflow_dispatch' || needs.tidy-if-needed.outputs.changed != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm build cache through builder stage
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: build
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  build-and-push:
+    name: Build and push multi-arch image
+    needs: [lint, test, warm-docker-cache]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
