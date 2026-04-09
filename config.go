@@ -87,12 +87,12 @@ type ApprovalConfig struct {
 
 // pendingApproval holds state for a dangerous action awaiting human sign-off.
 type pendingApproval struct {
-	Action       string
-	Project      string
-	Service      string
-	RequestAgent string
-	ExpiresAt    time.Time
-	Used         bool
+	Action         string
+	Project        string
+	Service        string
+	WebhookContext map[string]any
+	ExpiresAt      time.Time
+	Used           bool
 }
 
 func defaults() Config {

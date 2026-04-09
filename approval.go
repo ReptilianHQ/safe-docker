@@ -44,22 +44,33 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 
-	requestAgent := strings.TrimSpace(r.Header.Get("X-Request-Agent"))
+	webhookContextHeader := strings.TrimSpace(r.Header.Get("X-Webhook-Context"))
+	var webhookContext map[string]any
+	if webhookContextHeader != "" {
+		if err := json.Unmarshal([]byte(webhookContextHeader), &webhookContext); err != nil {
+			writeError(w, http.StatusBadRequest, "X-Webhook-Context must be a valid JSON object")
+			return
+		}
+		if webhookContext == nil {
+			writeError(w, http.StatusBadRequest, "X-Webhook-Context must be a JSON object")
+			return
+		}
+	}
 
 	ap := &pendingApproval{
-		Action:       action,
-		Project:      project,
-		Service:      service,
-		RequestAgent: requestAgent,
-		ExpiresAt:    expiresAt,
-		Used:         false,
+		Action:         action,
+		Project:        project,
+		Service:        service,
+		WebhookContext: webhookContext,
+		ExpiresAt:      expiresAt,
+		Used:           false,
 	}
 	s.approvalsMu.Lock()
 	s.approvals[token] = ap
 	s.approvalsMu.Unlock()
 
 	// POST to webhook.
-	webhookPayload := map[string]string{
+	webhookPayload := map[string]any{
 		"approval_key": token,
 		"action":       action,
 		"service":      service,
@@ -67,8 +78,8 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		"expires_at":   expiresAt.UTC().Format(time.RFC3339),
 		"message":      fmt.Sprintf("Agent requested: docker compose %s %s", action, service),
 	}
-	if requestAgent != "" {
-		webhookPayload["request_agent"] = requestAgent
+	if webhookContext != nil {
+		webhookPayload["webhook_context"] = webhookContext
 	}
 	payloadBytes, _ := json.Marshal(webhookPayload)
 
@@ -117,11 +128,17 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 	}
 	_ = resp.Body.Close()
 
+	contextKeys := make([]string, 0, len(webhookContext))
+	for k := range webhookContext {
+		contextKeys = append(contextKeys, k)
+	}
+
 	s.log.Info("approval pending",
 		"action", action,
 		"project", project,
 		"service", service,
-		"request_agent", requestAgent,
+		"webhook_context_present", webhookContext != nil,
+		"webhook_context_keys", contextKeys,
 		"expires_at", expiresAt.UTC().Format(time.RFC3339),
 		"caller", callerFromContext(r.Context()),
 	)

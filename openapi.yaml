@@ -425,12 +425,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
-        - name: X-Request-Agent
+        - name: X-Webhook-Context
           in: header
           required: false
           schema:
             type: string
-          description: Optional opaque requester identity to echo in approval webhook payloads (for example, an agent name like `komodo`).
+          description: Optional JSON object to echo in approval webhook payloads. Safe-docker validates that it is a JSON object, but does not interpret its contents.
       responses:
         "200":
           description: Recreate completed
@@ -456,12 +456,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
-        - name: X-Request-Agent
+        - name: X-Webhook-Context
           in: header
           required: false
           schema:
             type: string
-          description: Optional opaque requester identity to echo in approval webhook payloads (for example, an agent name like `komodo`).
+          description: Optional JSON object to echo in approval webhook payloads. Safe-docker validates that it is a JSON object, but does not interpret its contents.
       responses:
         "200":
           description: Build completed
