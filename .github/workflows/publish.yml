@@ -2,16 +2,62 @@ name: Publish Docker image
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  tidy-if-needed:
+    name: Tidy modules if needed
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.tidy.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Tidy dependencies and detect drift
+        id: tidy
+        run: |
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit module file updates
+        if: steps.tidy.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add go.mod go.sum
+          git commit -m "chore: tidy go modules"
+          git push
+
   build-and-push:
+    name: Build and push multi-arch image
+    needs: [tidy-if-needed]
+    if: github.event_name == 'workflow_dispatch' || needs.tidy-if-needed.outputs.changed != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,9 +83,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
+            type=raw,value=main,enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push

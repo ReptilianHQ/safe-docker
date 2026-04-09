@@ -4,104 +4,42 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (for manual runs, e.g. v0.3.0)"
+        required: true
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.25'
-          cache: true
-
-      - name: Tidy dependencies
-        run: go mod tidy
-
-      - name: Run tests
-        run: go test -v -race ./...
-
-  build-amd64:
-    name: Build (amd64)
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push (amd64)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-amd64
-          cache-from: type=gha,scope=amd64
-          cache-to: type=gha,mode=max,scope=amd64
-
-  build-arm64:
-    name: Build (arm64)
-    needs: test
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push (arm64)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/arm64
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-arm64
-          cache-from: type=gha,scope=arm64
-          cache-to: type=gha,mode=max,scope=arm64
-
-  manifest:
-    name: Create multi-arch manifest
-    needs: [build-amd64, build-arm64]
+  promote-and-release:
+    name: Promote image and create release
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
     steps:
+      - name: Determine release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF_NAME='${{ inputs.version }}'
+          else
+            REF_NAME='${{ github.ref_name }}'
+          fi
+
+          VERSION=${REF_NAME#v}
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f1-2)
+
+          echo "ref_name=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -109,46 +47,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f1-2)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "major=$MAJOR" >> $GITHUB_OUTPUT
-          echo "minor=$MINOR" >> $GITHUB_OUTPUT
-
-      - name: Create and push manifest
+      - name: Promote published SHA image to release tags
         run: |
           IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          TAG=${{ github.ref_name }}
-          
-          # Create manifest for version tag
-          docker manifest create ${IMAGE}:${{ steps.version.outputs.version }} \
-            ${IMAGE}:${TAG}-amd64 \
-            ${IMAGE}:${TAG}-arm64
-          docker manifest push ${IMAGE}:${{ steps.version.outputs.version }}
-          
-          # Create manifest for minor tag (e.g., 0.2)
-          docker manifest create ${IMAGE}:${{ steps.version.outputs.minor }} \
-            ${IMAGE}:${TAG}-amd64 \
-            ${IMAGE}:${TAG}-arm64
-          docker manifest push ${IMAGE}:${{ steps.version.outputs.minor }}
-          
-          # Create manifest for major tag (e.g., 0)
-          docker manifest create ${IMAGE}:${{ steps.version.outputs.major }} \
-            ${IMAGE}:${TAG}-amd64 \
-            ${IMAGE}:${TAG}-arm64
-          docker manifest push ${IMAGE}:${{ steps.version.outputs.major }}
-          
-          # Create manifest for latest
-          docker manifest create ${IMAGE}:latest \
-            ${IMAGE}:${TAG}-amd64 \
-            ${IMAGE}:${TAG}-arm64
-          docker manifest push ${IMAGE}:latest
+          SOURCE_TAG=sha-$(echo "${GITHUB_SHA}" | cut -c1-7)
+
+          docker buildx imagetools inspect ${IMAGE}:${SOURCE_TAG}
+
+          docker buildx imagetools create \
+            -t ${IMAGE}:${{ steps.version.outputs.version }} \
+            -t ${IMAGE}:${{ steps.version.outputs.minor }} \
+            -t ${IMAGE}:${{ steps.version.outputs.major }} \
+            ${IMAGE}:${SOURCE_TAG}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.ref_name }}
           generate_release_notes: true
