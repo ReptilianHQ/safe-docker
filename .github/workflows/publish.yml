@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: reptilianhq/safe-docker
   VARIANT: baseline
 
 concurrency:
