@@ -201,7 +201,7 @@ jobs:
         id: meta
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          SHA_TAG="sha-$(echo \"${GITHUB_SHA}\" | cut -c1-7)-${{ env.VARIANT }}"
+          SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)-${{ env.VARIANT }}"
           BRANCH_TAG="main-${{ env.VARIANT }}"
           LATEST_TAG="latest-${{ env.VARIANT }}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
@@ -250,7 +250,7 @@ jobs:
         id: meta
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          SHA_TAG="sha-$(echo \"${GITHUB_SHA}\" | cut -c1-7)-${{ env.VARIANT }}"
+          SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)-${{ env.VARIANT }}"
           BRANCH_TAG="main-${{ env.VARIANT }}"
           LATEST_TAG="latest-${{ env.VARIANT }}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
