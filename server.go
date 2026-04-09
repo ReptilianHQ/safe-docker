@@ -78,6 +78,33 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 	}
 	log.Info("compose SDK initialized")
 
+	// Verify compose files are loadable for projects that use compose actions.
+	composeActions := map[string]struct{}{"up": {}, "down": {}, "recreate": {}, "build": {}}
+	for name, proj := range cfg.Projects {
+		needsCompose := false
+		for _, svc := range proj.Services {
+			for _, action := range svc.Actions {
+				if _, ok := composeActions[action]; ok {
+					needsCompose = true
+					break
+				}
+			}
+			if needsCompose {
+				break
+			}
+		}
+		if !needsCompose {
+			continue
+		}
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := composeClient.loadProject(ctx2, name, proj.ComposeFile)
+		cancel2()
+		if err != nil {
+			return nil, fmt.Errorf("project %q compose file not loadable: %w", name, err)
+		}
+		log.Info("compose project verified", "project", name)
+	}
+
 	srv := &Server{
 		cfg:       cfg,
 		docker:    dockerClient,
