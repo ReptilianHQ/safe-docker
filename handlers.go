@@ -183,14 +183,14 @@ func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.audit(r, "logs", service, resolvedName, "error", err.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("logs failed: %v", err))
+		writeError(w, http.StatusBadGateway, "logs failed")
 		return
 	}
 	defer func() { _ = reader.Close() }()
 	payload, err := stripDockerMuxHeader(reader)
 	if err != nil {
 		s.audit(r, "logs", service, resolvedName, "error", err.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("log decode failed: %v", err))
+		writeError(w, http.StatusBadGateway, "log decode failed")
 		return
 	}
 	s.audit(r, "logs", service, resolvedName, "success", "")
@@ -279,7 +279,7 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 
 	if result.Error != nil {
 		s.audit(r, action, service, "", "error", result.Error.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, result.Error, result.Output))
+		writeError(w, http.StatusBadGateway, action+" failed")
 		return
 	}
 	s.audit(r, action, service, "", "success", "")
@@ -287,7 +287,6 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 		"project": project,
 		"service": service,
 		"status":  action + " completed",
-		"output":  result.Output,
 	})
 }
 
@@ -308,7 +307,7 @@ func (s *Server) lifecycleHandler(w http.ResponseWriter, r *http.Request, action
 
 	if err := fn(ctx, containerID); err != nil {
 		s.audit(r, action, service, resolvedName, "error", err.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v", action, err))
+		writeError(w, http.StatusBadGateway, action+" failed")
 		return
 	}
 	s.audit(r, action, service, resolvedName, "success", "")

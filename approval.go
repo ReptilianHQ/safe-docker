@@ -185,7 +185,7 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 
 	if result.Error != nil {
 		s.audit(r, "approve:"+action, service, "", "error", result.Error.Error())
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("%s failed: %v\n%s", action, result.Error, result.Output))
+		writeError(w, http.StatusBadGateway, action+" failed")
 		return
 	}
 
@@ -194,7 +194,6 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 		"status":  "executed",
 		"project": project,
 		"service": service,
-		"output":  result.Output,
 	})
 }
 
