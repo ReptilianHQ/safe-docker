@@ -950,7 +950,7 @@ func TestApprove_MalformedJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/approve", strings.NewReader("{{{"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", "test-agent")
+	req.Header.Set("X-API-Key", signedTestToken(t, "test-agent"))
 	rr := httptest.NewRecorder()
 	srv.router().ServeHTTP(rr, req)
 
