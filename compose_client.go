@@ -15,8 +15,8 @@ import (
 	"github.com/docker/compose/v5/pkg/compose"
 )
 
-// DefaultComposeFile is the default path where the compose file is mounted.
-// Assumes project root is mounted at /project.
+// DefaultComposeFile is the fallback compose file path when none is configured.
+// Prefer setting compose_file explicitly in the policy (e.g. ${PWD}/docker-compose.yml).
 const DefaultComposeFile = "/project/docker-compose.yml"
 
 // ComposeClient wraps the Docker Compose SDK for service operations.
@@ -120,7 +120,8 @@ func (c *ComposeClient) Up(ctx context.Context, projectName, serviceName, compos
 
 	err = service.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{
-			Services: []string{serviceName},
+			Services:      []string{serviceName},
+			IgnoreOrphans: true,
 		},
 		Start: api.StartOptions{
 			Services: []string{serviceName},
@@ -163,8 +164,9 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 
 	err = service.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{
-			Services: []string{serviceName},
-			Recreate: api.RecreateForce,
+			Services:      []string{serviceName},
+			Recreate:      api.RecreateForce,
+			IgnoreOrphans: true,
 		},
 		Start: api.StartOptions{
 			Services: []string{serviceName},

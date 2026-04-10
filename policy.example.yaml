@@ -29,9 +29,9 @@ auth:
 projects:
   # Project key = Docker Compose project name
   myproject:
-    # Path to docker-compose.yml (default: /project/docker-compose.yml)
-    # Mount the project root read-only at /project for builds to work.
-    compose_file: /project/docker-compose.yml
+    # Path to docker-compose.yml — use the real host path so compose
+    # labels and volume mounts match. ${PWD} is expanded at config load.
+    compose_file: ${PWD}/docker-compose.yml
     services:
       # Service key = Docker Compose service name
       api:

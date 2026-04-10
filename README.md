@@ -163,18 +163,18 @@ Example payload:
 
 See `docker-compose.example.yaml`.
 
-**Required for build/recreate:** Mount the project root read-only at `/project`:
+**Required for build/recreate:** Mount the project root at its real host path so compose labels and volume mounts match:
 
 ```yaml
 safe-docker:
   image: ghcr.io/reptilianhq/safe-docker:latest
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
-    - ./:/project:ro  # Project root for builds
-    - ./control/policy.yaml:/app/policy.yaml:ro
+    - ${PWD}:${PWD}:ro  # Project root at its real path
+    - ./policy.yaml:/app/policy.yaml:ro
 ```
 
-The SDK reads the compose file and build contexts from `/project`. Without this mount, build and recreate operations will fail.
+Set `compose_file` in the policy to the real path (e.g. `${PWD}/docker-compose.yml`). This ensures the compose SDK resolves paths identically to running on the host.
 
 Recommended deployment posture:
 - bind only to localhost or a trusted internal network

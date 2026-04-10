@@ -12,6 +12,7 @@ services:
     volumes:
       - ./policy.yaml:/app/policy.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${PWD}:${PWD}:ro  # Mount project at its real path so compose paths match the host
     ports:
       - "127.0.0.1:8080:8080"  # Bind to localhost only — do not expose publicly
     read_only: true
