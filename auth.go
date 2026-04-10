@@ -23,7 +23,7 @@ type signedCallerToken struct {
 	Caller string `json:"caller"`
 	Aud    string `json:"aud,omitempty"`
 	Iat    int64  `json:"iat,omitempty"`
-	Exp    int64  `json:"exp"`
+	Exp    int64  `json:"exp,omitempty"`
 	V      int    `json:"v"`
 }
 
@@ -142,6 +142,57 @@ func canonicalTokenPayload(tok signedCallerToken) ([]byte, error) {
 	return []byte(strings.Join(parts, "\n")), nil
 }
 
+func signCallerToken(tok signedCallerToken, secret string) (string, error) {
+	payload, err := json.Marshal(tok)
+	if err != nil {
+		return "", fmt.Errorf("marshal token: %w", err)
+	}
+	canonical, err := canonicalTokenPayload(tok)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize token: %w", err)
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(canonical)
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + sig, nil
+}
+
+func mintCallerToken(cfg Config, caller string, ttl time.Duration) (string, signedCallerToken, error) {
+	caller = strings.TrimSpace(caller)
+	if caller == "" {
+		return "", signedCallerToken{}, fmt.Errorf("caller is required")
+	}
+	allowed := false
+	for _, allowedCaller := range cfg.Auth.AuthorizedCallers {
+		if caller == allowedCaller {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", signedCallerToken{}, fmt.Errorf("caller %q not authorized", caller)
+	}
+	secret := strings.TrimSpace(os.Getenv(cfg.Auth.TokenSecretEnv))
+	if secret == "" {
+		return "", signedCallerToken{}, fmt.Errorf("token secret env %q is not set", cfg.Auth.TokenSecretEnv)
+	}
+	now := time.Now().UTC()
+	tok := signedCallerToken{
+		Caller: caller,
+		Aud:    "safe-docker",
+		Iat:    now.Unix(),
+		V:      1,
+	}
+	if ttl > 0 {
+		tok.Exp = now.Add(ttl).Unix()
+	}
+	signed, err := signCallerToken(tok, secret)
+	if err != nil {
+		return "", signedCallerToken{}, err
+	}
+	return signed, tok, nil
+}
+
 func (s *Server) authenticateCallerToken(raw string) (string, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 2 {
@@ -162,17 +213,16 @@ func (s *Server) authenticateCallerToken(raw string) (string, error) {
 	if strings.TrimSpace(tok.Caller) == "" {
 		return "", fmt.Errorf("missing caller")
 	}
-	if tok.Exp <= 0 {
-		return "", fmt.Errorf("missing exp")
-	}
 	if tok.V != 1 {
 		return "", fmt.Errorf("unsupported token version")
 	}
 	if tok.Aud != "" && tok.Aud != "safe-docker" {
 		return "", fmt.Errorf("invalid audience")
 	}
-	if now := time.Now().Unix(); tok.Exp < now {
-		return "", fmt.Errorf("token expired")
+	if tok.Exp > 0 {
+		if now := time.Now().Unix(); tok.Exp < now {
+			return "", fmt.Errorf("token expired")
+		}
 	}
 	allowed := false
 	for _, caller := range s.cfg.Auth.AuthorizedCallers {

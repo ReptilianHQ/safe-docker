@@ -134,7 +134,14 @@ go run . -config policy.yaml
 curl http://127.0.0.1:8080/health
 ```
 
-5. Restart an allowed service:
+5. Mint a caller token locally:
+
+```bash
+safe-docker auth mint --caller openclaw-agent
+safe-docker auth mint --caller openclaw-agent --ttl 1h --json
+```
+
+6. Restart an allowed service:
 
 ```bash
 curl -X POST \

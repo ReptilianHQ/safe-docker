@@ -82,6 +82,45 @@ func signedTestToken(t *testing.T, caller string) string {
 	return buildSignedTestToken(t, tok, os.Getenv("SAFE_DOCKER_AUTH_SECRET"))
 }
 
+func TestMintCallerToken_NonExpiring(t *testing.T) {
+	cfg := minimalConfig()
+	token, tok, err := mintCallerToken(cfg, "test-agent", 0)
+	if err != nil {
+		t.Fatalf("mintCallerToken returned error: %v", err)
+	}
+	if token == "" {
+		t.Fatal("expected token")
+	}
+	if tok.Caller != "test-agent" {
+		t.Fatalf("expected caller test-agent, got %q", tok.Caller)
+	}
+	if tok.Exp != 0 {
+		t.Fatalf("expected non-expiring token, got exp=%d", tok.Exp)
+	}
+}
+
+func TestMintCallerToken_WithTTL(t *testing.T) {
+	cfg := minimalConfig()
+	before := time.Now().Add(29 * time.Minute).Unix()
+	token, tok, err := mintCallerToken(cfg, "test-agent", 30*time.Minute)
+	if err != nil {
+		t.Fatalf("mintCallerToken returned error: %v", err)
+	}
+	if token == "" {
+		t.Fatal("expected token")
+	}
+	if tok.Exp < before {
+		t.Fatalf("expected exp after %d, got %d", before, tok.Exp)
+	}
+}
+
+func TestMintCallerToken_UnauthorizedCaller(t *testing.T) {
+	cfg := minimalConfig()
+	if _, _, err := mintCallerToken(cfg, "komodo", 0); err == nil {
+		t.Fatal("expected unauthorized caller error")
+	}
+}
+
 func get(t *testing.T, srv *Server, path, caller string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
