@@ -32,6 +32,14 @@ var dangerousActions = map[string]struct{}{
 	"build":    {},
 }
 
+// composeActions are actions that require a compose file (handled via the Compose SDK).
+var composeActions = map[string]struct{}{
+	"up":       {},
+	"down":     {},
+	"recreate": {},
+	"build":    {},
+}
+
 type Config struct {
 	Server   ServerConfig             `yaml:"server"`
 	Docker   DockerConfig             `yaml:"docker"`
@@ -42,7 +50,7 @@ type Config struct {
 }
 
 type ProjectConfig struct {
-	ComposeFile string                   `yaml:"compose_file"` // Path to docker-compose.yml (default: /project/docker-compose.yml)
+	ComposeFile string                   `yaml:"compose_file"` // Required when any service uses compose actions. Use the host path (e.g. ${PWD}/docker-compose.yml).
 	Services    map[string]ServicePolicy `yaml:"services"`
 }
 
@@ -178,6 +186,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("projects.%s.services must declare at least one service", project)
 		}
 		seenContainers := map[string]string{}
+		needsCompose := false
 		for service, policy := range projectCfg.Services {
 			if !validServiceName.MatchString(service) {
 				return fmt.Errorf("invalid service name %q in project %q", service, project)
@@ -201,7 +210,13 @@ func (c *Config) validate() error {
 				if _, isDangerous := dangerousActions[action]; isDangerous && !policy.Dangerous {
 					return fmt.Errorf("projects.%s.services.%s.actions contains dangerous action %q but dangerous: true not set", project, service, action)
 				}
+				if _, isCompose := composeActions[action]; isCompose {
+					needsCompose = true
+				}
 			}
+		}
+		if needsCompose && strings.TrimSpace(projectCfg.ComposeFile) == "" {
+			return fmt.Errorf("projects.%s.compose_file is required when any service uses compose actions (up/down/recreate/build)", project)
 		}
 	}
 	if c.Docker.TimeoutSeconds <= 0 {

@@ -81,7 +81,6 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 	log.Info("compose SDK initialized")
 
 	// Verify compose files are loadable for projects that use compose actions.
-	composeActions := map[string]struct{}{"up": {}, "down": {}, "recreate": {}, "build": {}}
 	for name, proj := range cfg.Projects {
 		needsCompose := false
 		for _, svc := range proj.Services {

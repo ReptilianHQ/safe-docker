@@ -15,10 +15,6 @@ import (
 	"github.com/docker/compose/v5/pkg/compose"
 )
 
-// DefaultComposeFile is the fallback compose file path when none is configured.
-// Prefer setting compose_file explicitly in the policy (e.g. ${PWD}/docker-compose.yml).
-const DefaultComposeFile = "/project/docker-compose.yml"
-
 // ComposeClient wraps the Docker Compose SDK for service operations.
 // All operations go through the SDK — no CLI shelling.
 type ComposeClient struct {
@@ -67,7 +63,7 @@ func (c *ComposeClient) newService() (api.Compose, *bytes.Buffer, error) {
 //   - loading .env from the project directory when present
 func (c *ComposeClient) loadProject(ctx context.Context, projectName, composeFile string) (*types.Project, error) {
 	if composeFile == "" {
-		composeFile = DefaultComposeFile
+		return nil, fmt.Errorf("compose_file is not configured for project %q", projectName)
 	}
 
 	if _, err := os.Stat(composeFile); err != nil {
