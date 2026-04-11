@@ -74,7 +74,7 @@ func newServer(cfg Config, log *slog.Logger) (*Server, error) {
 	log.Info("docker connected", "server_version", info.ServerVersion, "containers", info.Containers)
 
 	// Initialize Compose SDK client for build/up/down/recreate operations
-	composeClient, err := NewComposeClient(cfg.Docker.SocketPath)
+	composeClient, err := NewComposeClient(cfg.Docker.SocketPath, log)
 	if err != nil {
 		return nil, fmt.Errorf("create compose client: %w", err)
 	}

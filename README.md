@@ -176,6 +176,8 @@ safe-docker:
 
 The SDK reads the compose file and build contexts from `/project`. Without this mount, build and recreate operations will fail.
 
+Compose-backed endpoints now return compact compose output plus preflight metadata on success/failure, and support `?dry_run=true` (or `?preflight=true`) to inspect the loaded project, selected service, and obviously missing local images without executing the action or triggering approval.
+
 Recommended deployment posture:
 - bind only to localhost or a trusted internal network
 - put behind an authenticated reverse proxy if exposed beyond local host
