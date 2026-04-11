@@ -14,7 +14,6 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
-	imageapi "github.com/docker/docker/api/types/image"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
 )
@@ -175,7 +174,7 @@ func (c *ComposeClient) preflightProject(ctx context.Context, project *types.Pro
 
 func effectiveComposeFile(composeFile string) string {
 	if composeFile == "" {
-		return DefaultComposeFile
+		return "/project/docker-compose.yml"
 	}
 	return composeFile
 }
@@ -183,7 +182,7 @@ func effectiveComposeFile(composeFile string) string {
 func selectServices(project *types.Project, serviceName string) (types.Services, error) {
 	for _, svc := range project.Services {
 		if svc.Name == serviceName {
-			return types.Services{svc}, nil
+			return types.Services{serviceName: svc}, nil
 		}
 	}
 	return nil, fmt.Errorf("service %q not found in compose project %q", serviceName, project.Name)
@@ -224,7 +223,7 @@ func (c *ComposeClient) findMissingLocalImages(ctx context.Context, services typ
 		if imageRef == "" {
 			continue
 		}
-		_, err := dockerClient.ImageInspect(ctx, imageRef, imageapi.InspectOptions{})
+		_, err := dockerClient.ImageInspect(ctx, imageRef)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "no such image") {
 				missingSet[imageRef] = struct{}{}
