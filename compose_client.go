@@ -14,9 +14,14 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
+	imageapi "github.com/docker/docker/api/types/image"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
 )
+
+// DefaultComposeFile is the default path where the compose file is mounted.
+// Assumes project root is mounted at /project.
+const DefaultComposeFile = "/project/docker-compose.yml"
 
 // ComposeClient wraps the Docker Compose SDK for service operations.
 // All operations go through the SDK — no CLI shelling.
@@ -95,7 +100,7 @@ func (c *ComposeClient) newService() (api.Compose, *bytes.Buffer, error) {
 //   - loading .env from the project directory when present
 func (c *ComposeClient) loadProject(ctx context.Context, projectName, composeFile string) (*types.Project, error) {
 	if composeFile == "" {
-		return nil, fmt.Errorf("compose_file is not configured for project %q", projectName)
+		composeFile = DefaultComposeFile
 	}
 
 	if _, err := os.Stat(composeFile); err != nil {
@@ -170,7 +175,7 @@ func (c *ComposeClient) preflightProject(ctx context.Context, project *types.Pro
 
 func effectiveComposeFile(composeFile string) string {
 	if composeFile == "" {
-		return "/project/docker-compose.yml"
+		return DefaultComposeFile
 	}
 	return composeFile
 }
@@ -178,7 +183,7 @@ func effectiveComposeFile(composeFile string) string {
 func selectServices(project *types.Project, serviceName string) (types.Services, error) {
 	for _, svc := range project.Services {
 		if svc.Name == serviceName {
-			return types.Services{serviceName: svc}, nil
+			return types.Services{svc}, nil
 		}
 	}
 	return nil, fmt.Errorf("service %q not found in compose project %q", serviceName, project.Name)
@@ -219,7 +224,7 @@ func (c *ComposeClient) findMissingLocalImages(ctx context.Context, services typ
 		if imageRef == "" {
 			continue
 		}
-		_, err := dockerClient.ImageInspect(ctx, imageRef)
+		_, err := dockerClient.ImageInspect(ctx, imageRef, imageapi.InspectOptions{})
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "no such image") {
 				missingSet[imageRef] = struct{}{}
@@ -336,8 +341,7 @@ func (c *ComposeClient) Up(ctx context.Context, projectName, serviceName, compos
 
 	err = service.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{
-			Services:      []string{serviceName},
-			IgnoreOrphans: true,
+			Services: []string{serviceName},
 		},
 		Start: api.StartOptions{
 			Services: []string{serviceName},
@@ -394,9 +398,8 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 
 	err = service.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{
-			Services:      []string{serviceName},
-			Recreate:      api.RecreateForce,
-			IgnoreOrphans: true,
+			Services: []string{serviceName},
+			Recreate: api.RecreateForce,
 		},
 		Start: api.StartOptions{
 			Services: []string{serviceName},
