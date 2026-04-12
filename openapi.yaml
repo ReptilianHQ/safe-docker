@@ -176,6 +176,52 @@ components:
           type: string
           example: "restarted"
 
+    ComposeServiceSummary:
+      type: object
+      required: [name, has_build]
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+        has_build:
+          type: boolean
+        build_context:
+          type: string
+        depends_on:
+          type: array
+          items:
+            type: string
+
+    ComposePreflight:
+      type: object
+      required: [project, compose_file, loaded_project_name, target_service, requested_services, project_services, selected_services]
+      properties:
+        project:
+          type: string
+        compose_file:
+          type: string
+        loaded_project_name:
+          type: string
+        target_service:
+          type: string
+        requested_services:
+          type: array
+          items:
+            type: string
+        project_services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComposeServiceSummary"
+        selected_services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComposeServiceSummary"
+        missing_local_images:
+          type: array
+          items:
+            type: string
+
     ComposeResponse:
       type: object
       required: [project, service, status]
@@ -192,6 +238,8 @@ components:
         output:
           type: string
           description: Combined stdout/stderr from the compose command
+        preflight:
+          $ref: "#/components/schemas/ComposePreflight"
 
 paths:
   /health:
@@ -373,7 +421,9 @@ paths:
   /v1/projects/{project}/services/{service}/up:
     post:
       summary: Compose up
-      description: Runs `docker compose -p {project} up -d {service}`.
+      description: |
+        Runs `docker compose -p {project} up -d {service}`.
+        Add `?dry_run=true` (or `?preflight=true`) to return compose debug/preflight info without executing.
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
@@ -396,7 +446,9 @@ paths:
   /v1/projects/{project}/services/{service}/down:
     post:
       summary: Compose down
-      description: Runs `docker compose -p {project} down {service}`.
+      description: |
+        Runs `docker compose -p {project} down {service}`.
+        Add `?dry_run=true` (or `?preflight=true`) to return compose debug/preflight info without executing.
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
@@ -422,6 +474,7 @@ paths:
       description: |
         Runs `docker compose -p {project} up -d --force-recreate {service}`.
         Requires `dangerous: true` in service policy.
+        Add `?dry_run=true` (or `?preflight=true`) to return compose debug/preflight info without executing or requesting approval.
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
@@ -453,6 +506,7 @@ paths:
       description: |
         Runs `docker compose -p {project} build {service}`.
         Requires `dangerous: true` in service policy.
+        Add `?dry_run=true` (or `?preflight=true`) to return compose debug/preflight info without executing or requesting approval.
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
