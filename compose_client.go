@@ -16,6 +16,7 @@ import (
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
+	"github.com/docker/docker/api/types/container"
 )
 
 // DefaultComposeFile is the default path where the compose file is mounted.
@@ -321,6 +322,118 @@ func compactComposeOutput(output string) string {
 	return joined
 }
 
+func composeContainerName(c container.Summary) string {
+	for _, name := range c.Names {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(name, "/"))
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	if len(c.ID) > 12 {
+		return c.ID[:12]
+	}
+	return c.ID
+}
+
+func summarizeContainers(containers []container.Summary) []string {
+	summary := make([]string, 0, len(containers))
+	for _, ctr := range containers {
+		summary = append(summary, fmt.Sprintf("%s(state=%s,status=%s)", composeContainerName(ctr), ctr.State, ctr.Status))
+	}
+	sort.Strings(summary)
+	return summary
+}
+
+func shouldCleanupRecreateContainer(c container.Summary) bool {
+	switch strings.ToLower(strings.TrimSpace(c.State)) {
+	case "created", "exited", "dead":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *ComposeClient) listServiceContainers(ctx context.Context, projectName, serviceName string) ([]container.Summary, error) {
+	containers, err := c.dockerCLI.Client().ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("list service containers: %w", err)
+	}
+
+	matched := make([]container.Summary, 0)
+	for _, ctr := range containers {
+		if ctr.Labels["com.docker.compose.project"] != projectName {
+			continue
+		}
+		if ctr.Labels["com.docker.compose.service"] != serviceName {
+			continue
+		}
+		matched = append(matched, ctr)
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		if matched[i].Created == matched[j].Created {
+			return composeContainerName(matched[i]) < composeContainerName(matched[j])
+		}
+		return matched[i].Created < matched[j].Created
+	})
+	return matched, nil
+}
+
+func isNotFoundContainerErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such container") || strings.Contains(msg, "not found")
+}
+
+func (c *ComposeClient) removeServiceContainers(ctx context.Context, projectName, serviceName string, containers []container.Summary, reason string) error {
+	for _, ctr := range containers {
+		name := composeContainerName(ctr)
+		if c.log != nil {
+			c.log.Debug("compose recreate removing existing container",
+				"project", projectName,
+				"service", serviceName,
+				"container_id", ctr.ID,
+				"container", name,
+				"state", ctr.State,
+				"status", ctr.Status,
+				"reason", reason,
+			)
+		}
+		if err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true}); err != nil && !isNotFoundContainerErr(err) {
+			return fmt.Errorf("remove container %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (c *ComposeClient) cleanupRecreateArtifacts(ctx context.Context, projectName, serviceName string, preserveIDs map[string]struct{}) ([]string, error) {
+	containers, err := c.listServiceContainers(ctx, projectName, serviceName)
+	if err != nil {
+		return nil, err
+	}
+	removed := make([]string, 0)
+	for _, ctr := range containers {
+		if _, ok := preserveIDs[ctr.ID]; ok {
+			continue
+		}
+		if !shouldCleanupRecreateContainer(ctr) {
+			continue
+		}
+		name := composeContainerName(ctr)
+		if err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true}); err != nil {
+			if isNotFoundContainerErr(err) {
+				continue
+			}
+			return removed, fmt.Errorf("remove stale container %s: %w", name, err)
+		}
+		removed = append(removed, name)
+	}
+	sort.Strings(removed)
+	return removed, nil
+}
+
 // Up starts a service (docker compose up -d <service>).
 func (c *ComposeClient) Up(ctx context.Context, projectName, serviceName, composeFile string) ComposeResult {
 	project, err := c.loadProject(ctx, projectName, composeFile)
@@ -378,7 +491,12 @@ func (c *ComposeClient) Down(ctx context.Context, projectName, serviceName, comp
 	return result
 }
 
-// Recreate recreates a service (docker compose up -d --force-recreate <service>).
+// Recreate recreates a service with a narrow service-scoped remove-then-up sequence.
+//
+// We intentionally avoid Compose SDK force-recreate here because in practice it has
+// caused broader, incorrect convergence across the project. This implementation trades
+// away some of the richer compose-driven recreate semantics for a safer, more explicit
+// sequence scoped to the requested service only.
 func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, composeFile string) ComposeResult {
 	project, err := c.loadProject(ctx, projectName, composeFile)
 	if err != nil {
@@ -388,7 +506,29 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	c.logComposeStart("recreate", projectName, serviceName, composeFile, preflight, "recreate_mode", string(api.RecreateForce))
+	c.logComposeStart("recreate", projectName, serviceName, composeFile, preflight,
+		"strategy", "service_remove_then_up",
+		"recreate_mode", "sdk_up_without_force_recreate",
+	)
+
+	existing, err := c.listServiceContainers(ctx, projectName, serviceName)
+	if err != nil {
+		return ComposeResult{Error: err, Preflight: preflight}
+	}
+	if c.log != nil {
+		c.log.Debug("compose recreate discovered existing containers",
+			"project", projectName,
+			"service", serviceName,
+			"count", len(existing),
+			"containers", summarizeContainers(existing),
+		)
+	}
+
+	if err := c.removeServiceContainers(ctx, projectName, serviceName, existing, "pre_recreate_reset"); err != nil {
+		result := ComposeResult{Error: err, Preflight: preflight}
+		c.logComposeResult("recreate", projectName, serviceName, result)
+		return result
+	}
 
 	service, output, err := c.newService()
 	if err != nil {
@@ -398,7 +538,6 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 	err = service.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{
 			Services: []string{serviceName},
-			Recreate: api.RecreateForce,
 		},
 		Start: api.StartOptions{
 			Services: []string{serviceName},
@@ -406,6 +545,25 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 	})
 
 	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight}
+	removedArtifacts, cleanupErr := c.cleanupRecreateArtifacts(ctx, projectName, serviceName, nil)
+	if len(removedArtifacts) > 0 {
+		result.Output = strings.TrimSpace(result.Output + "\ncleanup removed stale containers: " + strings.Join(removedArtifacts, ", "))
+	}
+	if cleanupErr != nil {
+		if c.log != nil {
+			c.log.Warn("compose recreate cleanup failed",
+				"project", projectName,
+				"service", serviceName,
+				"error", cleanupErr,
+			)
+		}
+		if result.Error == nil {
+			result.Error = cleanupErr
+		} else {
+			result.Error = fmt.Errorf("%w | recreate cleanup: %v", result.Error, cleanupErr)
+		}
+	}
+
 	c.logComposeResult("recreate", projectName, serviceName, result)
 	return result
 }

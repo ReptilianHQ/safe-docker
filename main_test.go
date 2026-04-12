@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1209,5 +1211,45 @@ func TestCompactComposeOutputTruncates(t *testing.T) {
 	}
 	if strings.Contains(got, "line-24") {
 		t.Fatalf("expected truncated output, got %q", got)
+	}
+}
+
+func TestComposeContainerNameUsesTrimmedName(t *testing.T) {
+	got := composeContainerName(container.Summary{
+		ID:    "1234567890abcdef",
+		Names: []string{"/testproj-myapp-1"},
+	})
+	if got != "testproj-myapp-1" {
+		t.Fatalf("composeContainerName() = %q, want %q", got, "testproj-myapp-1")
+	}
+}
+
+func TestSummarizeContainersSorted(t *testing.T) {
+	got := summarizeContainers([]container.Summary{
+		{ID: "bbb222222222", Names: []string{"/b"}, State: "running", Status: "Up 3s"},
+		{ID: "aaa111111111", Names: []string{"/a"}, State: "created", Status: "Created"},
+	})
+	want := []string{"a(state=created,status=Created)", "b(state=running,status=Up 3s)"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("summarizeContainers() = %#v, want %#v", got, want)
+	}
+}
+
+func TestShouldCleanupRecreateContainer(t *testing.T) {
+	cases := []struct {
+		state string
+		want  bool
+	}{
+		{state: "created", want: true},
+		{state: "exited", want: true},
+		{state: "dead", want: true},
+		{state: "running", want: false},
+		{state: "restarting", want: false},
+	}
+	for _, tc := range cases {
+		got := shouldCleanupRecreateContainer(container.Summary{State: tc.state})
+		if got != tc.want {
+			t.Fatalf("shouldCleanupRecreateContainer(%q) = %v, want %v", tc.state, got, tc.want)
+		}
 	}
 }
