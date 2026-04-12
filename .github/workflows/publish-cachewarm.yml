@@ -202,8 +202,13 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)-${{ env.VARIANT }}"
-          BRANCH_TAG="main-${{ env.VARIANT }}"
-          LATEST_TAG="latest-${{ env.VARIANT }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH_TAG="pr-${{ github.event.pull_request.number }}-${{ env.VARIANT }}"
+            LATEST_TAG=""
+          else
+            BRANCH_TAG="main-${{ env.VARIANT }}"
+            LATEST_TAG="latest-${{ env.VARIANT }}"
+          fi
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "sha_tag=$SHA_TAG" >> "$GITHUB_OUTPUT"
           echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
@@ -251,8 +256,13 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)-${{ env.VARIANT }}"
-          BRANCH_TAG="main-${{ env.VARIANT }}"
-          LATEST_TAG="latest-${{ env.VARIANT }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH_TAG="pr-${{ github.event.pull_request.number }}-${{ env.VARIANT }}"
+            LATEST_TAG=""
+          else
+            BRANCH_TAG="main-${{ env.VARIANT }}"
+            LATEST_TAG="latest-${{ env.VARIANT }}"
+          fi
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "sha_tag=$SHA_TAG" >> "$GITHUB_OUTPUT"
           echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
@@ -291,9 +301,17 @@ jobs:
           BRANCH_TAG="${{ needs.build-amd64.outputs.branch_tag }}"
           LATEST_TAG="${{ needs.build-amd64.outputs.latest_tag }}"
 
-          docker buildx imagetools create \
-            -t ${IMAGE}:${SHA_TAG} \
-            -t ${IMAGE}:${BRANCH_TAG} \
-            -t ${IMAGE}:${LATEST_TAG} \
-            ${IMAGE}:${SHA_TAG}-amd64 \
-            ${IMAGE}:${SHA_TAG}-arm64
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            docker buildx imagetools create \
+              -t ${IMAGE}:${SHA_TAG} \
+              -t ${IMAGE}:${BRANCH_TAG} \
+              ${IMAGE}:${SHA_TAG}-amd64 \
+              ${IMAGE}:${SHA_TAG}-arm64
+          else
+            docker buildx imagetools create \
+              -t ${IMAGE}:${SHA_TAG} \
+              -t ${IMAGE}:${BRANCH_TAG} \
+              -t ${IMAGE}:${LATEST_TAG} \
+              ${IMAGE}:${SHA_TAG}-amd64 \
+              ${IMAGE}:${SHA_TAG}-arm64
+          fi

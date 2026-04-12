@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1160,4 +1162,52 @@ func TestNoExecImport(t *testing.T) {
 	// If someone adds exec.Command back, the linter and code review should catch it.
 	// This test is a belt-and-suspenders reminder of the architectural constraint.
 	t.Log("compose operations use SDK, not CLI exec — verified by absence of os/exec import")
+}
+
+func TestComposePreflightRequested(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"/v1/projects/testproj/services/danger/build", false},
+		{"/v1/projects/testproj/services/danger/build?dry_run=true", true},
+		{"/v1/projects/testproj/services/danger/build?dry_run=1", true},
+		{"/v1/projects/testproj/services/danger/build?preflight=true", true},
+		{"/v1/projects/testproj/services/danger/build?preflight=false", false},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, tc.url, nil)
+		got := composePreflightRequested(req)
+		if got != tc.want {
+			t.Errorf("composePreflightRequested(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestComposeResultErrorIncludesOutput(t *testing.T) {
+	err := composeResultError("line 1\nline 2", errors.New("boom"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected wrapped error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "compose output: line 1\nline 2") {
+		t.Fatalf("expected compose output in error, got %q", err.Error())
+	}
+}
+
+func TestCompactComposeOutputTruncates(t *testing.T) {
+	var lines []string
+	for i := 0; i < 25; i++ {
+		lines = append(lines, fmt.Sprintf("line-%02d", i))
+	}
+	got := compactComposeOutput(strings.Join(lines, "\n"))
+	if !strings.Contains(got, "... (5 more lines)") {
+		t.Fatalf("expected truncation marker, got %q", got)
+	}
+	if strings.Contains(got, "line-24") {
+		t.Fatalf("expected truncated output, got %q", got)
+	}
 }

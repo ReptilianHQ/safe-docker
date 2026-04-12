@@ -48,3 +48,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
+
+func writeComposeError(w http.ResponseWriter, status int, action string, result ComposeResult) {
+	response := map[string]any{
+		"error": action + " failed",
+	}
+	if result.Error != nil {
+		response["detail"] = result.Error.Error()
+	}
+	if result.Output != "" {
+		response["output"] = compactComposeOutput(result.Output)
+	}
+	if result.Preflight != nil {
+		response["preflight"] = result.Preflight
+	}
+	writeJSON(w, status, response)
+}

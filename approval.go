@@ -212,15 +212,17 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 
 	if result.Error != nil {
 		s.audit(r, "approve:"+action, service, "", "error", result.Error.Error())
-		writeError(w, http.StatusBadGateway, action+" failed")
+		writeComposeError(w, http.StatusBadGateway, action, result)
 		return
 	}
 
 	s.audit(r, "approve:"+action, service, "", "success", "")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "executed",
-		"project": project,
-		"service": service,
+		"status":    "executed",
+		"project":   project,
+		"service":   service,
+		"output":    compactComposeOutput(result.Output),
+		"preflight": result.Preflight,
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -235,16 +236,31 @@ func (s *Server) buildHandler(w http.ResponseWriter, r *http.Request) {
 	s.composeHandler(w, r, "build")
 }
 
+func composePreflightRequested(r *http.Request) bool {
+	for _, key := range []string{"dry_run", "preflight"} {
+		raw := strings.TrimSpace(r.URL.Query().Get(key))
+		if raw == "" {
+			continue
+		}
+		if ok, err := strconv.ParseBool(raw); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action string) {
 	project, service, _, ok := s.authorizeAction(w, r, action)
 	if !ok {
 		return
 	}
 
-	// Intercept dangerous actions for HITL approval.
-	if _, isDangerous := dangerousActions[action]; isDangerous {
-		s.handleDangerousAction(w, r, action, project, service)
-		return
+	if !composePreflightRequested(r) {
+		// Intercept dangerous actions for HITL approval.
+		if _, isDangerous := dangerousActions[action]; isDangerous {
+			s.handleDangerousAction(w, r, action, project, service)
+			return
+		}
 	}
 
 	s.executeCompose(w, r, action, project, service)
@@ -260,6 +276,27 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 	composeFile := ""
 	if projectCfg, ok := s.cfg.Projects[project]; ok {
 		composeFile = projectCfg.ComposeFile
+	}
+
+	if composePreflightRequested(r) {
+		preflight, err := s.compose.Preflight(ctx, project, service, composeFile)
+		if err != nil {
+			s.audit(r, action+":preflight", service, "", "error", err.Error())
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error":  action + " preflight failed",
+				"detail": err.Error(),
+			})
+			return
+		}
+		s.audit(r, action+":preflight", service, "", "success", "")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project":   project,
+			"service":   service,
+			"action":    action,
+			"status":    "preflight completed",
+			"preflight": preflight,
+		})
+		return
 	}
 
 	var result ComposeResult
@@ -279,14 +316,16 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 
 	if result.Error != nil {
 		s.audit(r, action, service, "", "error", result.Error.Error())
-		writeError(w, http.StatusBadGateway, action+" failed")
+		writeComposeError(w, http.StatusBadGateway, action, result)
 		return
 	}
 	s.audit(r, action, service, "", "success", "")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project": project,
-		"service": service,
-		"status":  action + " completed",
+		"project":   project,
+		"service":   service,
+		"status":    action + " completed",
+		"output":    compactComposeOutput(result.Output),
+		"preflight": result.Preflight,
 	})
 }
 

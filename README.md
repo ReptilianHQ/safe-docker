@@ -176,6 +176,8 @@ safe-docker:
 
 Set `compose_file` in the policy to the real path (e.g. `${PWD}/docker-compose.yml`). This ensures the compose SDK resolves paths identically to running on the host.
 
+Compose-backed endpoints now return compact compose output plus preflight metadata on success/failure, and support `?dry_run=true` (or `?preflight=true`) to inspect the loaded project, selected service, and obviously missing local images without executing the action or triggering approval.
+
 Recommended deployment posture:
 - bind only to localhost or a trusted internal network
 - put behind an authenticated reverse proxy if exposed beyond local host
