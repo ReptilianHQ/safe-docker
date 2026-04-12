@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
@@ -138,8 +141,13 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)-${{ env.VARIANT }}"
-          BRANCH_TAG="main-${{ env.VARIANT }}"
-          LATEST_TAG="latest-${{ env.VARIANT }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH_TAG="pr-${{ github.event.pull_request.number }}-${{ env.VARIANT }}"
+            LATEST_TAG=""
+          else
+            BRANCH_TAG="main-${{ env.VARIANT }}"
+            LATEST_TAG="latest-${{ env.VARIANT }}"
+          fi
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "sha_tag=$SHA_TAG" >> "$GITHUB_OUTPUT"
           echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
@@ -187,8 +195,13 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)-${{ env.VARIANT }}"
-          BRANCH_TAG="main-${{ env.VARIANT }}"
-          LATEST_TAG="latest-${{ env.VARIANT }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH_TAG="pr-${{ github.event.pull_request.number }}-${{ env.VARIANT }}"
+            LATEST_TAG=""
+          else
+            BRANCH_TAG="main-${{ env.VARIANT }}"
+            LATEST_TAG="latest-${{ env.VARIANT }}"
+          fi
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "sha_tag=$SHA_TAG" >> "$GITHUB_OUTPUT"
           echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
@@ -226,16 +239,24 @@ jobs:
           SHA_TAG="${{ needs.build-amd64.outputs.sha_tag }}"
           BRANCH_TAG="${{ needs.build-amd64.outputs.branch_tag }}"
           LATEST_TAG="${{ needs.build-amd64.outputs.latest_tag }}"
-          CANONICAL_SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)"
-          CANONICAL_BRANCH_TAG="main"
-          CANONICAL_LATEST_TAG="latest"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            docker buildx imagetools create \
+              -t ${IMAGE}:${SHA_TAG} \
+              -t ${IMAGE}:${BRANCH_TAG} \
+              ${IMAGE}:${SHA_TAG}-amd64 \
+              ${IMAGE}:${SHA_TAG}-arm64
+          else
+            CANONICAL_SHA_TAG="sha-$(printf %s "$GITHUB_SHA" | cut -c1-7)"
+            CANONICAL_BRANCH_TAG="main"
+            CANONICAL_LATEST_TAG="latest"
 
-          docker buildx imagetools create \
-            -t ${IMAGE}:${SHA_TAG} \
-            -t ${IMAGE}:${BRANCH_TAG} \
-            -t ${IMAGE}:${LATEST_TAG} \
-            -t ${IMAGE}:${CANONICAL_SHA_TAG} \
-            -t ${IMAGE}:${CANONICAL_BRANCH_TAG} \
-            -t ${IMAGE}:${CANONICAL_LATEST_TAG} \
-            ${IMAGE}:${SHA_TAG}-amd64 \
-            ${IMAGE}:${SHA_TAG}-arm64
+            docker buildx imagetools create \
+              -t ${IMAGE}:${SHA_TAG} \
+              -t ${IMAGE}:${BRANCH_TAG} \
+              -t ${IMAGE}:${LATEST_TAG} \
+              -t ${IMAGE}:${CANONICAL_SHA_TAG} \
+              -t ${IMAGE}:${CANONICAL_BRANCH_TAG} \
+              -t ${IMAGE}:${CANONICAL_LATEST_TAG} \
+              ${IMAGE}:${SHA_TAG}-amd64 \
+              ${IMAGE}:${SHA_TAG}-arm64
+          fi
