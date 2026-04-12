@@ -17,6 +17,7 @@ import (
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
 	"github.com/docker/docker/api/types/container"
+	mobyclient "github.com/moby/moby/client"
 )
 
 // DefaultComposeFile is the default path where the compose file is mounted.
@@ -354,13 +355,13 @@ func shouldCleanupRecreateContainer(c container.Summary) bool {
 }
 
 func (c *ComposeClient) listServiceContainers(ctx context.Context, projectName, serviceName string) ([]container.Summary, error) {
-	containers, err := c.dockerCLI.Client().ContainerList(ctx, container.ListOptions{All: true})
+	result, err := c.dockerCLI.Client().ContainerList(ctx, mobyclient.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("list service containers: %w", err)
 	}
 
 	matched := make([]container.Summary, 0)
-	for _, ctr := range containers {
+	for _, ctr := range result.Containers {
 		if ctr.Labels["com.docker.compose.project"] != projectName {
 			continue
 		}
@@ -401,7 +402,7 @@ func (c *ComposeClient) removeServiceContainers(ctx context.Context, projectName
 				"reason", reason,
 			)
 		}
-		if err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true}); err != nil && !isNotFoundContainerErr(err) {
+		if _, err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, mobyclient.ContainerRemoveOptions{Force: true}); err != nil && !isNotFoundContainerErr(err) {
 			return fmt.Errorf("remove container %s: %w", name, err)
 		}
 	}
@@ -422,7 +423,7 @@ func (c *ComposeClient) cleanupRecreateArtifacts(ctx context.Context, projectNam
 			continue
 		}
 		name := composeContainerName(ctr)
-		if err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, container.RemoveOptions{Force: true}); err != nil {
+		if _, err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, mobyclient.ContainerRemoveOptions{Force: true}); err != nil {
 			if isNotFoundContainerErr(err) {
 				continue
 			}
