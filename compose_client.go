@@ -1,3 +1,42 @@
+// compose_client.go — Compose operations for safe-docker.
+//
+// safe-docker is a governance proxy for Docker Compose. It gates access to
+// container lifecycle operations via policy and HITL approval. It can run
+// on the host, inside the compose project it manages, or in a separate
+// project managing one or many others.
+//
+// safe-docker uses the Compose SDK for project loading and container
+// creation (networks, volumes, labels, dependency wiring) but deliberately
+// suppresses the SDK's convergence engine. Convergence — where compose
+// compares running containers against desired state and silently recreates
+// diverged ones — is the opposite of governed access. A governance proxy
+// should never mutate a container that wasn't explicitly asked about.
+//
+// This also avoids a practical problem: the Compose SDK computes config
+// hashes from the caller's execution context (environment, working
+// directory, compose-go version). When the caller's context differs from
+// the one that originally created the containers — which it will in any
+// deployment where safe-docker isn't the host process that ran the initial
+// `docker compose up` — the SDK sees every container as "diverged" and
+// does a rename-aside + recreate cycle, producing phantom containers.
+//
+// safe-docker's operations have different semantics from `docker compose`:
+//
+//   Up       — "Ensure this service has a running container."
+//              Create if missing, start if stopped, no-op if running.
+//              Never reconverges. Never detects config drift.
+//
+//   Down     — "Stop and remove this service's container."
+//
+//   Recreate — "Destroy and freshly create this service's container."
+//              Requires HITL approval. Uses explicit Docker API removal
+//              followed by compose create, bypassing rename-aside.
+//
+//   Build    — "Build this service's image."
+//              Requires HITL approval.
+//
+// Config drift detection is not safe-docker's job. If an operator wants a
+// fresh container, they go through the Recreate path with explicit approval.
 package main
 
 import (
@@ -18,7 +57,7 @@ import (
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
-	"github.com/docker/docker/api/types/container"
+	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 )
 
@@ -383,6 +422,10 @@ func (c *ComposeClient) runComposeCLI(ctx context.Context, workDir string, comma
 	return out, nil
 }
 
+// Up ensures the target service has a running container. If the container
+// doesn't exist it is created; if it exists but is stopped it is started;
+// if it is already running this is a no-op. Up never triggers convergence
+// or config-drift detection — see file header for rationale.
 func (c *ComposeClient) Up(ctx context.Context, backend, projectName, serviceName, composeFile string) ComposeResult {
 	if backend == ComposeBackendCLI {
 		return c.cliAction(ctx, "up", projectName, serviceName, composeFile)
@@ -390,6 +433,7 @@ func (c *ComposeClient) Up(ctx context.Context, backend, projectName, serviceNam
 	return c.sdkUp(ctx, projectName, serviceName, composeFile)
 }
 
+// Down stops and removes the target service's container.
 func (c *ComposeClient) Down(ctx context.Context, backend, projectName, serviceName, composeFile string) ComposeResult {
 	if backend == ComposeBackendCLI {
 		return c.cliAction(ctx, "down", projectName, serviceName, composeFile)
@@ -397,6 +441,10 @@ func (c *ComposeClient) Down(ctx context.Context, backend, projectName, serviceN
 	return c.sdkDown(ctx, projectName, serviceName, composeFile)
 }
 
+// Recreate destroys the target service's container and creates a fresh one.
+// This is a dangerous action gated behind HITL approval. The SDK path uses
+// explicit Docker API removal followed by a compose Up with RecreateNever,
+// bypassing the SDK's rename-aside cycle entirely.
 func (c *ComposeClient) Recreate(ctx context.Context, backend, projectName, serviceName, composeFile string) ComposeResult {
 	if backend == ComposeBackendCLI {
 		return c.cliAction(ctx, "recreate", projectName, serviceName, composeFile)
@@ -404,6 +452,8 @@ func (c *ComposeClient) Recreate(ctx context.Context, backend, projectName, serv
 	return c.sdkRecreate(ctx, projectName, serviceName, composeFile)
 }
 
+// Build builds the target service's image. This is a dangerous action gated
+// behind HITL approval.
 func (c *ComposeClient) Build(ctx context.Context, backend, projectName, serviceName, composeFile string) ComposeResult {
 	if backend == ComposeBackendCLI {
 		return c.cliAction(ctx, "build", projectName, serviceName, composeFile)
@@ -440,7 +490,15 @@ func (c *ComposeClient) sdkUp(ctx context.Context, projectName, serviceName, com
 	if err != nil {
 		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
 	}
-	err = service.Up(ctx, project, api.UpOptions{Create: api.CreateOptions{Services: []string{serviceName}}, Start: api.StartOptions{Services: []string{serviceName}}})
+	// RecreateNever: Up means "ensure running", not "converge to desired state".
+	// Convergence is suppressed in all deployment modes — see file header.
+	err = service.Up(ctx, project, api.UpOptions{
+		Create: api.CreateOptions{
+			Services: []string{serviceName},
+			Recreate: api.RecreateNever,
+		},
+		Start: api.StartOptions{Services: []string{serviceName}},
+	})
 	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight, Debug: debug}
 	c.logComposeResult("up", ComposeBackendSDK, projectName, serviceName, result)
 	return result
@@ -467,7 +525,7 @@ func (c *ComposeClient) sdkDown(ctx context.Context, projectName, serviceName, c
 	return result
 }
 
-func composeContainerName(c container.Summary) string {
+func composeContainerName(c mobycontainer.Summary) string {
 	for _, name := range c.Names {
 		trimmed := strings.TrimSpace(strings.TrimPrefix(name, "/"))
 		if trimmed != "" {
@@ -480,7 +538,7 @@ func composeContainerName(c container.Summary) string {
 	return c.ID
 }
 
-func summarizeContainers(containers []container.Summary) []string {
+func summarizeContainers(containers []mobycontainer.Summary) []string {
 	summary := make([]string, 0, len(containers))
 	for _, ctr := range containers {
 		summary = append(summary, fmt.Sprintf("%s(state=%s,status=%s)", composeContainerName(ctr), ctr.State, ctr.Status))
@@ -489,8 +547,8 @@ func summarizeContainers(containers []container.Summary) []string {
 	return summary
 }
 
-func shouldCleanupRecreateContainer(c container.Summary) bool {
-	switch strings.ToLower(strings.TrimSpace(c.State)) {
+func shouldCleanupRecreateContainer(c mobycontainer.Summary) bool {
+	switch strings.ToLower(strings.TrimSpace(string(c.State))) {
 	case "created", "exited", "dead":
 		return true
 	default:
@@ -498,12 +556,12 @@ func shouldCleanupRecreateContainer(c container.Summary) bool {
 	}
 }
 
-func (c *ComposeClient) listServiceContainers(ctx context.Context, projectName, serviceName string) ([]container.Summary, error) {
+func (c *ComposeClient) listServiceContainers(ctx context.Context, projectName, serviceName string) ([]mobycontainer.Summary, error) {
 	result, err := c.dockerCLI.Client().ContainerList(ctx, mobyclient.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("list service containers: %w", err)
 	}
-	matched := make([]container.Summary, 0)
+	matched := make([]mobycontainer.Summary, 0)
 	for _, ctr := range result.Items {
 		if ctr.Labels["com.docker.compose.project"] != projectName || ctr.Labels["com.docker.compose.service"] != serviceName {
 			continue
@@ -527,7 +585,7 @@ func isNotFoundContainerErr(err error) bool {
 	return strings.Contains(msg, "no such container") || strings.Contains(msg, "not found")
 }
 
-func (c *ComposeClient) removeServiceContainers(ctx context.Context, projectName, serviceName string, containers []container.Summary, reason string) error {
+func (c *ComposeClient) removeServiceContainers(ctx context.Context, projectName, serviceName string, containers []mobycontainer.Summary, reason string) error {
 	for _, ctr := range containers {
 		name := composeContainerName(ctr)
 		if c.log != nil {
@@ -571,29 +629,26 @@ func (c *ComposeClient) sdkRecreate(ctx context.Context, projectName, serviceNam
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	debug := &ComposeDebug{Backend: ComposeBackendSDK, Command: composeActionCommandPreview("recreate", projectName, serviceName, composeFile), WorkingDir: filepath.Dir(effectiveComposeFile(composeFile)), ComposeFile: effectiveComposeFile(composeFile), LoadedProjectName: project.Name, Notes: []string{"SDK recreate uses the existing safe-docker service_remove_then_up strategy instead of force-recreate via CLI."}}
+	debug := &ComposeDebug{Backend: ComposeBackendSDK, Command: composeActionCommandPreview("recreate", projectName, serviceName, composeFile), WorkingDir: filepath.Dir(effectiveComposeFile(composeFile)), ComposeFile: effectiveComposeFile(composeFile), LoadedProjectName: project.Name, Notes: []string{"Recreate uses explicit Docker API removal then compose Up with RecreateNever, bypassing the SDK's rename-aside cycle."}}
 	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile, debug)
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	c.logComposeStart("recreate", ComposeBackendSDK, projectName, serviceName, composeFile, preflight, "strategy", "service_remove_then_up", "recreate_mode", "sdk_up_without_force_recreate")
-	existing, err := c.listServiceContainers(ctx, projectName, serviceName)
-	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
-	}
-	if c.log != nil {
-		c.log.Debug("compose recreate discovered existing containers", "project", projectName, "service", serviceName, "count", len(existing), "containers", summarizeContainers(existing))
-	}
-	if err := c.removeServiceContainers(ctx, projectName, serviceName, existing, "pre_recreate_reset"); err != nil {
-		result := ComposeResult{Error: err, Preflight: preflight, Debug: debug}
-		c.logComposeResult("recreate", ComposeBackendSDK, projectName, serviceName, result)
-		return result
-	}
+	c.logComposeStart("recreate", ComposeBackendSDK, projectName, serviceName, composeFile, preflight, "strategy", "remove_then_up")
+	// Containers were already removed by Recreate() before calling this method.
+	// The SDK sees "container missing" and creates a fresh one with proper
+	// compose semantics (networks, volumes, labels).
 	service, output, err := c.newService()
 	if err != nil {
 		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
 	}
-	err = service.Up(ctx, project, api.UpOptions{Create: api.CreateOptions{Services: []string{serviceName}}, Start: api.StartOptions{Services: []string{serviceName}}})
+	err = service.Up(ctx, project, api.UpOptions{
+		Create: api.CreateOptions{
+			Services: []string{serviceName},
+			Recreate: api.RecreateNever,
+		},
+		Start: api.StartOptions{Services: []string{serviceName}},
+	})
 	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight, Debug: debug}
 	removedArtifacts, cleanupErr := c.cleanupRecreateArtifacts(ctx, projectName, serviceName, nil)
 	if len(removedArtifacts) > 0 {

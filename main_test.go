@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	mobycontainer "github.com/moby/moby/api/types/container"
 )
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1252,7 +1252,7 @@ func TestCompactComposeOutputTruncates(t *testing.T) {
 }
 
 func TestComposeContainerNameUsesTrimmedName(t *testing.T) {
-	got := composeContainerName(container.Summary{
+	got := composeContainerName(mobycontainer.Summary{
 		ID:    "1234567890abcdef",
 		Names: []string{"/testproj-myapp-1"},
 	})
@@ -1262,9 +1262,9 @@ func TestComposeContainerNameUsesTrimmedName(t *testing.T) {
 }
 
 func TestSummarizeContainersSorted(t *testing.T) {
-	got := summarizeContainers([]container.Summary{
-		{ID: "bbb222222222", Names: []string{"/b"}, State: "running", Status: "Up 3s"},
-		{ID: "aaa111111111", Names: []string{"/a"}, State: "created", Status: "Created"},
+	got := summarizeContainers([]mobycontainer.Summary{
+		{ID: "bbb222222222", Names: []string{"/b"}, State: mobycontainer.ContainerState("running"), Status: "Up 3s"},
+		{ID: "aaa111111111", Names: []string{"/a"}, State: mobycontainer.ContainerState("created"), Status: "Created"},
 	})
 	want := []string{"a(state=created,status=Created)", "b(state=running,status=Up 3s)"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
@@ -1284,7 +1284,7 @@ func TestShouldCleanupRecreateContainer(t *testing.T) {
 		{state: "restarting", want: false},
 	}
 	for _, tc := range cases {
-		got := shouldCleanupRecreateContainer(container.Summary{State: tc.state})
+		got := shouldCleanupRecreateContainer(mobycontainer.Summary{State: mobycontainer.ContainerState(tc.state)})
 		if got != tc.want {
 			t.Fatalf("shouldCleanupRecreateContainer(%q) = %v, want %v", tc.state, got, tc.want)
 		}
