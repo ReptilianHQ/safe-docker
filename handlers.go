@@ -278,7 +278,7 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 	}
 
 	if composePreflightRequested(r) {
-		preflight, err := s.compose.Preflight(ctx, action, project, service, composeFile)
+		preflight, err := s.compose.Preflight(ctx, project, service, composeFile)
 		if err != nil {
 			s.audit(r, action+":preflight", service, "", "error", err.Error())
 			writeJSON(w, http.StatusBadGateway, map[string]any{
@@ -294,7 +294,6 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 			"action":    action,
 			"status":    "preflight completed",
 			"preflight": preflight,
-			"debug":     preflight.Debug,
 		})
 		return
 	}
@@ -320,14 +319,17 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 		return
 	}
 	s.audit(r, action, service, "", "success", "")
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"project":   project,
 		"service":   service,
 		"status":    action + " completed",
 		"output":    compactComposeOutput(result.Output),
 		"preflight": result.Preflight,
-		"debug":     result.Debug,
-	})
+	}
+	if len(result.Notes) > 0 {
+		response["notes"] = result.Notes
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) lifecycleHandler(w http.ResponseWriter, r *http.Request, action string, fn func(context.Context, string) error) {

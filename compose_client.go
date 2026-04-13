@@ -74,31 +74,22 @@ type ComposeServiceSummary struct {
 	DependsOn    []string `json:"depends_on,omitempty"`
 }
 
-type ComposeDebug struct {
-	Command           []string `json:"command,omitempty"`
-	Notes             []string `json:"notes,omitempty"`
-	WorkingDir        string   `json:"working_dir,omitempty"`
-	ComposeFile       string   `json:"compose_file,omitempty"`
-	LoadedProjectName string   `json:"loaded_project_name,omitempty"`
-}
-
 type ComposePreflight struct {
-	Project           string                  `json:"project"`
-	ComposeFile       string                  `json:"compose_file"`
-	LoadedProjectName string                  `json:"loaded_project_name"`
-	TargetService     string                  `json:"target_service"`
-	RequestedServices []string                `json:"requested_services"`
-	ProjectServices   []ComposeServiceSummary `json:"project_services"`
-	SelectedServices  []ComposeServiceSummary `json:"selected_services"`
-	MissingLocalImages []string               `json:"missing_local_images,omitempty"`
-	Debug             *ComposeDebug           `json:"debug,omitempty"`
+	Project            string                  `json:"project"`
+	ComposeFile        string                  `json:"compose_file"`
+	LoadedProjectName  string                  `json:"loaded_project_name"`
+	TargetService      string                  `json:"target_service"`
+	RequestedServices  []string                `json:"requested_services"`
+	ProjectServices    []ComposeServiceSummary `json:"project_services"`
+	SelectedServices   []ComposeServiceSummary `json:"selected_services"`
+	MissingLocalImages []string                `json:"missing_local_images,omitempty"`
 }
 
 type ComposeResult struct {
 	Output    string            `json:"output,omitempty"`
 	Error     error             `json:"-"`
 	Preflight *ComposePreflight `json:"preflight,omitempty"`
-	Debug     *ComposeDebug     `json:"debug,omitempty"`
+	Notes     []string          `json:"notes,omitempty"`
 }
 
 func NewComposeClient(socketPath string, log *slog.Logger) (*ComposeClient, error) {
@@ -164,20 +155,15 @@ func (c *ComposeClient) loadProject(ctx context.Context, projectName, composeFil
 }
 
 // Preflight inspects the compose project without executing any mutations.
-func (c *ComposeClient) Preflight(ctx context.Context, action, projectName, serviceName, composeFile string) (*ComposePreflight, error) {
+func (c *ComposeClient) Preflight(ctx context.Context, projectName, serviceName, composeFile string) (*ComposePreflight, error) {
 	project, err := c.loadProject(ctx, projectName, composeFile)
 	if err != nil {
 		return nil, err
 	}
-	return c.preflightProject(ctx, project, projectName, serviceName, composeFile, &ComposeDebug{
-		Command:     composeActionCommandPreview(action, projectName, serviceName, composeFile),
-		Notes:       []string{"Preflight inspects the compose project in-process; no compose action was executed."},
-		WorkingDir:  filepath.Dir(effectiveComposeFile(composeFile)),
-		ComposeFile: effectiveComposeFile(composeFile),
-	})
+	return c.preflightProject(ctx, project, projectName, serviceName, composeFile)
 }
 
-func (c *ComposeClient) preflightProject(ctx context.Context, project *types.Project, projectName, serviceName, composeFile string, debug *ComposeDebug) (*ComposePreflight, error) {
+func (c *ComposeClient) preflightProject(ctx context.Context, project *types.Project, projectName, serviceName, composeFile string) (*ComposePreflight, error) {
 	selected, err := selectServices(project, serviceName)
 	if err != nil {
 		return nil, err
@@ -190,10 +176,6 @@ func (c *ComposeClient) preflightProject(ctx context.Context, project *types.Pro
 		RequestedServices: []string{serviceName},
 		ProjectServices:   summarizeServices(project.Services),
 		SelectedServices:  summarizeServices(selected),
-		Debug:             debug,
-	}
-	if result.Debug != nil && result.Debug.LoadedProjectName == "" {
-		result.Debug.LoadedProjectName = project.Name
 	}
 	missing, err := c.findMissingLocalImages(ctx, project.Services)
 	if err != nil {
@@ -284,7 +266,7 @@ func (c *ComposeClient) logComposeResult(action, projectName, serviceName string
 	if c.log == nil {
 		return
 	}
-	attrs := []any{"action", action, "project", projectName, "service", serviceName, "output", compactComposeOutput(result.Output), "debug", result.Debug}
+	attrs := []any{"action", action, "project", projectName, "service", serviceName, "output", compactComposeOutput(result.Output)}
 	if result.Preflight != nil {
 		attrs = append(attrs, "loaded_project_name", result.Preflight.LoadedProjectName, "missing_local_images", result.Preflight.MissingLocalImages)
 	}
@@ -328,22 +310,6 @@ func compactComposeOutput(output string) string {
 	return joined
 }
 
-func composeActionCommandPreview(action, projectName, serviceName, composeFile string) []string {
-	base := []string{"docker", "compose", "-f", effectiveComposeFile(composeFile), "-p", projectName}
-	switch action {
-	case "up":
-		return append(base, "up", "-d", serviceName)
-	case "down":
-		return append(base, "down", serviceName)
-	case "recreate":
-		return append(base, "up", "-d", "--force-recreate", serviceName)
-	case "build":
-		return append(base, "build", serviceName)
-	default:
-		return append(base, action, serviceName)
-	}
-}
-
 // Up ensures the target service has a running container. If the container
 // doesn't exist it is created; if it exists but is stopped it is started;
 // if it is already running this is a no-op. Up never triggers convergence
@@ -353,15 +319,14 @@ func (c *ComposeClient) Up(ctx context.Context, projectName, serviceName, compos
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	debug := &ComposeDebug{Command: composeActionCommandPreview("up", projectName, serviceName, composeFile), WorkingDir: filepath.Dir(effectiveComposeFile(composeFile)), ComposeFile: effectiveComposeFile(composeFile), LoadedProjectName: project.Name}
-	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile, debug)
+	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile)
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
 	c.logComposeStart("up", projectName, serviceName, composeFile, preflight)
 	service, output, err := c.newService()
 	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
+		return ComposeResult{Error: err, Preflight: preflight}
 	}
 	// RecreateNever: Up means "ensure running", not "converge to desired state".
 	// Convergence is suppressed in all deployment modes — see file header.
@@ -372,7 +337,7 @@ func (c *ComposeClient) Up(ctx context.Context, projectName, serviceName, compos
 		},
 		Start: api.StartOptions{Services: []string{serviceName}},
 	})
-	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight, Debug: debug}
+	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight}
 	c.logComposeResult("up", projectName, serviceName, result)
 	return result
 }
@@ -383,18 +348,17 @@ func (c *ComposeClient) Down(ctx context.Context, projectName, serviceName, comp
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	debug := &ComposeDebug{Command: composeActionCommandPreview("down", projectName, serviceName, composeFile), WorkingDir: filepath.Dir(effectiveComposeFile(composeFile)), ComposeFile: effectiveComposeFile(composeFile), LoadedProjectName: project.Name}
-	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile, debug)
+	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile)
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
 	c.logComposeStart("down", projectName, serviceName, composeFile, preflight)
 	service, output, err := c.newService()
 	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
+		return ComposeResult{Error: err, Preflight: preflight}
 	}
 	err = service.Down(ctx, projectName, api.DownOptions{Services: []string{serviceName}})
-	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight, Debug: debug}
+	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight}
 	c.logComposeResult("down", projectName, serviceName, result)
 	return result
 }
@@ -408,28 +372,27 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	debug := &ComposeDebug{Command: composeActionCommandPreview("recreate", projectName, serviceName, composeFile), WorkingDir: filepath.Dir(effectiveComposeFile(composeFile)), ComposeFile: effectiveComposeFile(composeFile), LoadedProjectName: project.Name, Notes: []string{"Recreate uses explicit Docker API removal then compose Up with RecreateNever, bypassing the SDK's rename-aside cycle."}}
-	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile, debug)
+	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile)
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
 	// Explicit removal via Docker API, then compose create.
 	existing, err := c.listServiceContainers(ctx, projectName, serviceName)
 	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
+		return ComposeResult{Error: err, Preflight: preflight}
 	}
 	if c.log != nil {
 		c.log.Debug("compose recreate discovered existing containers", "project", projectName, "service", serviceName, "count", len(existing), "containers", summarizeContainers(existing))
 	}
 	if err := c.removeServiceContainers(ctx, projectName, serviceName, existing, "pre_recreate_reset"); err != nil {
-		result := ComposeResult{Error: err, Preflight: preflight, Debug: debug}
+		result := ComposeResult{Error: err, Preflight: preflight}
 		c.logComposeResult("recreate", projectName, serviceName, result)
 		return result
 	}
 	c.logComposeStart("recreate", projectName, serviceName, composeFile, preflight, "strategy", "remove_then_up")
 	service, output, err := c.newService()
 	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
+		return ComposeResult{Error: err, Preflight: preflight}
 	}
 	err = service.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{
@@ -438,7 +401,12 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 		},
 		Start: api.StartOptions{Services: []string{serviceName}},
 	})
-	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight, Debug: debug}
+	result := ComposeResult{
+		Output:    output.String(),
+		Error:     composeResultError(output.String(), err),
+		Preflight: preflight,
+		Notes:     []string{"Recreate uses explicit Docker API removal then compose Up with RecreateNever, bypassing the SDK's rename-aside cycle."},
+	}
 	removedArtifacts, cleanupErr := c.cleanupRecreateArtifacts(ctx, projectName, serviceName, nil)
 	if len(removedArtifacts) > 0 {
 		result.Output = strings.TrimSpace(result.Output + "\ncleanup removed stale containers: " + strings.Join(removedArtifacts, ", "))
@@ -464,18 +432,17 @@ func (c *ComposeClient) Build(ctx context.Context, projectName, serviceName, com
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	debug := &ComposeDebug{Command: composeActionCommandPreview("build", projectName, serviceName, composeFile), WorkingDir: filepath.Dir(effectiveComposeFile(composeFile)), ComposeFile: effectiveComposeFile(composeFile), LoadedProjectName: project.Name}
-	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile, debug)
+	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile)
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
 	c.logComposeStart("build", projectName, serviceName, composeFile, preflight)
 	service, output, err := c.newService()
 	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight, Debug: debug}
+		return ComposeResult{Error: err, Preflight: preflight}
 	}
 	err = service.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}})
-	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight, Debug: debug}
+	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight}
 	c.logComposeResult("build", projectName, serviceName, result)
 	return result
 }

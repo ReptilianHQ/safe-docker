@@ -215,14 +215,17 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.audit(r, "approve:"+action, service, "", "success", "")
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"status":    "executed",
 		"project":   project,
 		"service":   service,
 		"output":    compactComposeOutput(result.Output),
 		"preflight": result.Preflight,
-		"debug":     result.Debug,
-	})
+	}
+	if len(result.Notes) > 0 {
+		response["notes"] = result.Notes
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // generateToken creates a cryptographically random 12-byte hex token.

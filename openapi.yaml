@@ -193,24 +193,6 @@ components:
           items:
             type: string
 
-    ComposeDebug:
-      type: object
-      properties:
-        command:
-          type: array
-          items:
-            type: string
-        notes:
-          type: array
-          items:
-            type: string
-        working_dir:
-          type: string
-        compose_file:
-          type: string
-        loaded_project_name:
-          type: string
-
     ComposePreflight:
       type: object
       required: [project, compose_file, loaded_project_name, target_service, requested_services, project_services, selected_services]
@@ -239,8 +221,6 @@ components:
           type: array
           items:
             type: string
-        debug:
-          $ref: "#/components/schemas/ComposeDebug"
 
     ComposeResponse:
       type: object
@@ -260,8 +240,11 @@ components:
           description: Combined stdout/stderr from the compose command
         preflight:
           $ref: "#/components/schemas/ComposePreflight"
-        debug:
-          $ref: "#/components/schemas/ComposeDebug"
+        notes:
+          type: array
+          items:
+            type: string
+          description: Operational notes about how the action was executed (e.g. recreate strategy).
 
 paths:
   /health:

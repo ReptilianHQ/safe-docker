@@ -1187,13 +1187,6 @@ func TestComposePreflightRequested(t *testing.T) {
 	}
 }
 
-func TestComposeActionCommandPreview(t *testing.T) {
-	got := composeActionCommandPreview("recreate", "testproj", "danger", "/tmp/docker-compose.yml")
-	want := []string{"docker", "compose", "-f", "/tmp/docker-compose.yml", "-p", "testproj", "up", "-d", "--force-recreate", "danger"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("composeActionCommandPreview() = %#v, want %#v", got, want)
-	}
-}
 
 func TestComposeResultErrorIncludesOutput(t *testing.T) {
 	err := composeResultError("line 1\nline 2", errors.New("boom"))
