@@ -44,6 +44,12 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 
+	backend, err := composeBackendFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	webhookContextHeader := strings.TrimSpace(r.Header.Get("X-Webhook-Context"))
 	var webhookContext map[string]any
 	if webhookContextHeader != "" {
@@ -59,6 +65,7 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 
 	ap := &pendingApproval{
 		Action:         action,
+		Backend:        backend,
 		Project:        project,
 		Service:        service,
 		WebhookContext: webhookContext,
@@ -75,11 +82,12 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 	webhookPayload := map[string]any{
 		"approval_key": token,
 		"action":       action,
+		"backend":      backend,
 		"service":      service,
 		"project":      project,
 		"caller":       caller,
 		"expires_at":   expiresAt.UTC().Format(time.RFC3339),
-		"message":      fmt.Sprintf("Agent requested: docker compose %s %s", action, service),
+		"message":      fmt.Sprintf("Agent requested: docker compose %s %s (backend=%s)", action, service, backend),
 	}
 	if webhookContext != nil {
 		webhookPayload["webhook_context"] = webhookContext
@@ -138,6 +146,7 @@ func (s *Server) handleDangerousAction(w http.ResponseWriter, r *http.Request, a
 
 	s.log.Info("approval pending",
 		"action", action,
+		"backend", backend,
 		"project", project,
 		"service", service,
 		"webhook_context_present", webhookContext != nil,
@@ -185,15 +194,17 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 	// Mark used and copy fields before releasing the lock.
 	ap.Used = true
 	action := ap.Action
+	backend := ap.Backend
+	if strings.TrimSpace(backend) == "" {
+		backend = ComposeBackendSDK
+	}
 	project := ap.Project
 	service := ap.Service
 	s.approvalsMu.Unlock()
 
-	// Execute via Compose SDK (no CLI exec).
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Docker.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	// Get compose file path from project config (or use default)
 	composeFile := ""
 	if projectCfg, ok := s.cfg.Projects[project]; ok {
 		composeFile = projectCfg.ComposeFile
@@ -202,9 +213,9 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 	var result ComposeResult
 	switch action {
 	case "recreate":
-		result = s.compose.Recreate(ctx, project, service, composeFile)
+		result = s.compose.Recreate(ctx, backend, project, service, composeFile)
 	case "build":
-		result = s.compose.Build(ctx, project, service, composeFile)
+		result = s.compose.Build(ctx, backend, project, service, composeFile)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported approved action: %s", action))
 		return
@@ -221,8 +232,10 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 		"status":    "executed",
 		"project":   project,
 		"service":   service,
+		"backend":   backend,
 		"output":    compactComposeOutput(result.Output),
 		"preflight": result.Preflight,
+		"debug":     result.Debug,
 	})
 }
 

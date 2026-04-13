@@ -28,7 +28,7 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 			httpStatus = http.StatusServiceUnavailable
 		}
 	}
-	writeJSON(w, httpStatus, map[string]string{"status": status})
+	writeJSON(w, httpStatus, map[string]any{"status": status, "compose_cli": cliBackendHealth()})
 }
 
 func (s *Server) listProjectsHandler(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +249,19 @@ func composePreflightRequested(r *http.Request) bool {
 	return false
 }
 
+func composeBackendFromRequest(r *http.Request) (string, error) {
+	raw := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("backend")))
+	if raw == "" {
+		return ComposeBackendSDK, nil
+	}
+	switch raw {
+	case ComposeBackendSDK, ComposeBackendCLI:
+		return raw, nil
+	default:
+		return "", fmt.Errorf("invalid backend %q (expected sdk or cli)", raw)
+	}
+}
+
 func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action string) {
 	project, service, _, ok := s.authorizeAction(w, r, action)
 	if !ok {
@@ -266,25 +279,31 @@ func (s *Server) composeHandler(w http.ResponseWriter, r *http.Request, action s
 	s.executeCompose(w, r, action, project, service)
 }
 
-// executeCompose runs compose operations via the SDK (no CLI exec).
+// executeCompose runs compose operations through the selected compose backend.
 // Used by both composeHandler (non-dangerous) and approveHandler (post-approval).
 func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, project, service string) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.Docker.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	// Get compose file path from project config (or use default)
+	backend, err := composeBackendFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	composeFile := ""
 	if projectCfg, ok := s.cfg.Projects[project]; ok {
 		composeFile = projectCfg.ComposeFile
 	}
 
 	if composePreflightRequested(r) {
-		preflight, err := s.compose.Preflight(ctx, project, service, composeFile)
+		preflight, err := s.compose.Preflight(ctx, backend, action, project, service, composeFile)
 		if err != nil {
 			s.audit(r, action+":preflight", service, "", "error", err.Error())
 			writeJSON(w, http.StatusBadGateway, map[string]any{
-				"error":  action + " preflight failed",
-				"detail": err.Error(),
+				"error":   action + " preflight failed",
+				"detail":  err.Error(),
+				"backend": backend,
 			})
 			return
 		}
@@ -293,8 +312,10 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 			"project":   project,
 			"service":   service,
 			"action":    action,
+			"backend":   backend,
 			"status":    "preflight completed",
 			"preflight": preflight,
+			"debug":     preflight.Debug,
 		})
 		return
 	}
@@ -302,13 +323,13 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 	var result ComposeResult
 	switch action {
 	case "up":
-		result = s.compose.Up(ctx, project, service, composeFile)
+		result = s.compose.Up(ctx, backend, project, service, composeFile)
 	case "down":
-		result = s.compose.Down(ctx, project, service, composeFile)
+		result = s.compose.Down(ctx, backend, project, service, composeFile)
 	case "recreate":
-		result = s.compose.Recreate(ctx, project, service, composeFile)
+		result = s.compose.Recreate(ctx, backend, project, service, composeFile)
 	case "build":
-		result = s.compose.Build(ctx, project, service, composeFile)
+		result = s.compose.Build(ctx, backend, project, service, composeFile)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported compose action: %s", action))
 		return
@@ -323,9 +344,11 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":   project,
 		"service":   service,
+		"backend":   backend,
 		"status":    action + " completed",
 		"output":    compactComposeOutput(result.Output),
 		"preflight": result.Preflight,
+		"debug":     result.Debug,
 	})
 }
 

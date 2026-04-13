@@ -16,7 +16,7 @@ Safe by default. Human-readable policy. Built for agents, operators, and interna
 It does **not** expose the full Docker API.
 It is a policy firewall in front of Docker, not a Docker replacement.
 
-**No CLI shelling.** All compose operations go through the [Docker Compose SDK](https://docs.docker.com/compose/compose-sdk/) — no `docker` binary required in the container.
+Compose operations default to the [Docker Compose SDK](https://docs.docker.com/compose/compose-sdk/), and now also support an explicit CLI-backed path for diagnosis/comparison. The CLI backend is opt-in per request via `?backend=cli`.
 
 ## Why
 
@@ -174,9 +174,23 @@ safe-docker:
     - ./policy.yaml:/app/policy.yaml:ro
 ```
 
+The image now includes a pinned Docker Compose CLI plugin (`v2.39.4`) at `/usr/local/lib/docker/cli-plugins/docker-compose` so the optional CLI backend can run inside the container.
+
 Set `compose_file` in the policy to the real path (e.g. `${PWD}/docker-compose.yml`). This ensures the compose SDK resolves paths identically to running on the host.
 
-Compose-backed endpoints now return compact compose output plus preflight metadata on success/failure, and support `?dry_run=true` (or `?preflight=true`) to inspect the loaded project, selected service, and obviously missing local images without executing the action or triggering approval.
+Compose-backed endpoints now return compact compose output plus preflight/debug metadata on success/failure.
+
+Backend selection:
+- default: `?backend=sdk`
+- comparison path: `?backend=cli`
+
+Preflight / dry-run:
+- `?dry_run=true` or `?preflight=true` works with both backends
+- SDK preflight is in-process inspection only
+- CLI preflight is intentionally approximate, not a true dry-run: it runs safe diagnostics (`docker compose config --format json` and `docker compose ps --all --format json`) and returns the command preview for the mutating action
+- preflight never executes the mutating compose action and never triggers approval
+
+Dangerous approval semantics are unchanged: `build` and `recreate` still require policy opt-in plus HITL approval before execution. For dangerous actions, the backend requested on the initial API call is stored with the approval token and reused after approval.
 
 Recommended deployment posture:
 - bind only to localhost or a trusted internal network

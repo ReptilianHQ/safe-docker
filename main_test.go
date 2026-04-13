@@ -1187,6 +1187,43 @@ func TestComposePreflightRequested(t *testing.T) {
 	}
 }
 
+func TestComposeBackendFromRequest(t *testing.T) {
+	cases := []struct {
+		url      string
+		want     string
+		wantErr  bool
+	}{
+		{"/v1/projects/testproj/services/danger/build", ComposeBackendSDK, false},
+		{"/v1/projects/testproj/services/danger/build?backend=sdk", ComposeBackendSDK, false},
+		{"/v1/projects/testproj/services/danger/build?backend=cli", ComposeBackendCLI, false},
+		{"/v1/projects/testproj/services/danger/build?backend=bogus", "", true},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, tc.url, nil)
+		got, err := composeBackendFromRequest(req)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("composeBackendFromRequest(%q): expected error", tc.url)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("composeBackendFromRequest(%q): %v", tc.url, err)
+		}
+		if got != tc.want {
+			t.Fatalf("composeBackendFromRequest(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestComposeActionCommandPreview(t *testing.T) {
+	got := composeActionCommandPreview("recreate", "testproj", "danger", "/tmp/docker-compose.yml")
+	want := []string{"docker", "compose", "-f", "/tmp/docker-compose.yml", "-p", "testproj", "up", "-d", "--force-recreate", "danger"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("composeActionCommandPreview() = %#v, want %#v", got, want)
+	}
+}
+
 func TestComposeResultErrorIncludesOutput(t *testing.T) {
 	err := composeResultError("line 1\nline 2", errors.New("boom"))
 	if err == nil {
