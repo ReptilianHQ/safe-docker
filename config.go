@@ -93,7 +93,6 @@ type ApprovalConfig struct {
 // pendingApproval holds state for a dangerous action awaiting human sign-off.
 type pendingApproval struct {
 	Action         string
-	Backend        string
 	Project        string
 	Service        string
 	WebhookContext map[string]any

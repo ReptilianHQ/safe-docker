@@ -45,16 +45,6 @@ components:
       description: Docker Compose service name
       example: api
 
-    ComposeBackendParam:
-      name: backend
-      in: query
-      required: false
-      schema:
-        type: string
-        enum: [sdk, cli]
-        default: sdk
-      description: Select the compose execution backend. Defaults to the existing SDK path; use `cli` for docker compose CLI execution/comparison.
-
   responses:
     Unauthorized:
       description: Missing API key
@@ -92,18 +82,12 @@ components:
 
     HealthResponse:
       type: object
-      required: [status, compose_cli]
+      required: [status]
       properties:
         status:
           type: string
           enum: [ok, degraded]
           example: "ok"
-        compose_cli:
-          type: object
-          properties:
-            docker_compose_plugin:
-              type: string
-              enum: [present, missing]
 
     ProjectEntry:
       type: object
@@ -211,28 +195,12 @@ components:
 
     ComposeDebug:
       type: object
-      required: [backend]
       properties:
-        backend:
-          type: string
-          enum: [sdk, cli]
         command:
           type: array
           items:
             type: string
-        approximate_dry_run:
-          type: boolean
-        is_real_dry_run:
-          type: boolean
         notes:
-          type: array
-          items:
-            type: string
-        config_command:
-          type: array
-          items:
-            type: string
-        ps_command:
           type: array
           items:
             type: string
@@ -273,16 +241,10 @@ components:
             type: string
         debug:
           $ref: "#/components/schemas/ComposeDebug"
-        config_output:
-          type: string
-          description: Present for CLI preflight; output from `docker compose config --format json`.
-        ps_output:
-          type: string
-          description: Present for CLI preflight; output from `docker compose ps --all --format json <service>`.
 
     ComposeResponse:
       type: object
-      required: [project, service, status, backend]
+      required: [project, service, status]
       properties:
         project:
           type: string
@@ -290,9 +252,6 @@ components:
         service:
           type: string
           example: "api"
-        backend:
-          type: string
-          enum: [sdk, cli]
         status:
           type: string
           example: "up completed"
@@ -490,7 +449,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
-        - $ref: "#/components/parameters/ComposeBackendParam"
+
       responses:
         "200":
           description: Up completed
@@ -516,7 +475,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
-        - $ref: "#/components/parameters/ComposeBackendParam"
+
       responses:
         "200":
           description: Down completed
@@ -543,7 +502,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
-        - $ref: "#/components/parameters/ComposeBackendParam"
+
         - name: X-Webhook-Context
           in: header
           required: false
@@ -576,7 +535,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ProjectParam"
         - $ref: "#/components/parameters/ServiceParam"
-        - $ref: "#/components/parameters/ComposeBackendParam"
+
         - name: X-Webhook-Context
           in: header
           required: false
@@ -605,8 +564,7 @@ paths:
       description: |
         Executes a dangerous action (build, recreate) after human approval via webhook.
         The approval token must be obtained from the webhook payload sent during the
-        initial dangerous action request. The originally requested compose backend is
-        preserved with the approval token and reused here.
+        initial dangerous action request.
       requestBody:
         required: true
         content:

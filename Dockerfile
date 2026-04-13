@@ -16,17 +16,7 @@ LABEL org.opencontainers.image.title="safe-docker" \
       org.opencontainers.image.description="Policy-enforced HTTP proxy for Docker Compose operations" \
       org.opencontainers.image.licenses="MIT"
 
-ARG DOCKER_COMPOSE_VERSION=2.39.4
-ARG TARGETARCH
-RUN apk add --no-cache ca-certificates wget docker-cli docker-cli-buildx \
- && case "${TARGETARCH}" in \
-      amd64) compose_arch=x86_64 ;; \
-      arm64) compose_arch=aarch64 ;; \
-      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
- && mkdir -p /usr/local/lib/docker/cli-plugins \
- && wget -O /usr/local/lib/docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" \
- && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+RUN apk add --no-cache ca-certificates docker-cli docker-cli-buildx \
  && addgroup -S app \
  && adduser -S -G app app \
  && mkdir -p /app \

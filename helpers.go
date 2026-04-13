@@ -63,7 +63,6 @@ func writeComposeError(w http.ResponseWriter, status int, action string, result 
 		response["preflight"] = result.Preflight
 	}
 	if result.Debug != nil {
-		response["backend"] = result.Debug.Backend
 		response["debug"] = result.Debug
 	}
 	writeJSON(w, status, response)
