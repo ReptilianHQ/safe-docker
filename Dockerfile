@@ -16,7 +16,7 @@ LABEL org.opencontainers.image.title="safe-docker" \
       org.opencontainers.image.description="Policy-enforced HTTP proxy for Docker Compose operations" \
       org.opencontainers.image.licenses="MIT"
 
-RUN apk add --no-cache ca-certificates docker-cli-buildx \
+RUN apk add --no-cache ca-certificates \
  && addgroup -S app \
  && adduser -S -G app app \
  && mkdir -p /app \
