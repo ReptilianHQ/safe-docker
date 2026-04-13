@@ -16,7 +16,7 @@ Safe by default. Human-readable policy. Built for agents, operators, and interna
 It does **not** expose the full Docker API.
 It is a policy firewall in front of Docker, not a Docker replacement.
 
-Compose operations default to the [Docker Compose SDK](https://docs.docker.com/compose/compose-sdk/), and now also support an explicit CLI-backed path for diagnosis/comparison. The CLI backend is opt-in per request via `?backend=cli`.
+**No CLI shelling.** All compose operations go through the [Docker Compose SDK](https://docs.docker.com/compose/compose-sdk/) — no `docker` binary required in the container.
 
 ## Why
 
