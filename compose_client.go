@@ -12,13 +12,26 @@
 // diverged ones — is the opposite of governed access. A governance proxy
 // should never mutate a container that wasn't explicitly asked about.
 //
-// This also avoids a practical problem: the Compose SDK computes config
-// hashes from the caller's execution context (environment, working
-// directory, compose-go version). When the caller's context differs from
-// the one that originally created the containers — which it will in any
-// deployment where safe-docker isn't the host process that ran the initial
-// `docker compose up` — the SDK sees every container as "diverged" and
-// does a rename-aside + recreate cycle, producing phantom containers.
+// Suppression requires two layers because the SDK's convergence is pervasive:
+//
+//  1. Project scoping (scopeProjectToService) — the project model passed to
+//     the SDK is stripped to only the target service. Without this, the SDK
+//     evaluates every service in the project and applies default convergence
+//     (RecreateDiverged) to services outside the CreateOptions.Services filter.
+//
+//  2. RecreateNever — even for the target service, the SDK would detect config
+//     hash divergence and rename-aside the container. RecreateNever suppresses
+//     this for the one service we're operating on.
+//
+// Both are needed. RecreateNever alone still lets the SDK touch other services.
+// Scoping alone still lets the SDK reconverge the target service.
+//
+// The config hash problem: the Compose SDK computes hashes from the caller's
+// execution context (environment, working directory, compose-go version).
+// When the context differs from the one that originally created the containers
+// — which it will in any deployment where safe-docker isn't the host process
+// that ran the initial `docker compose up` — the SDK sees every container as
+// "diverged" and does a rename-aside + recreate cycle, producing phantoms.
 //
 // safe-docker's operations have different semantics from `docker compose`:
 //
@@ -204,6 +217,24 @@ func selectServices(project *types.Project, serviceName string) (types.Services,
 	return nil, fmt.Errorf("service %q not found in compose project %q", serviceName, project.Name)
 }
 
+// scopeProjectToService returns a shallow copy of the project containing only
+// the target service with DependsOn cleared. This is necessary because the
+// Compose SDK's convergence engine evaluates the full project graph on every
+// Up call. RecreateNever only protects services listed in CreateOptions.Services
+// — all other services in the project still get default RecreateDiverged
+// treatment, causing phantom containers via rename-aside.
+func scopeProjectToService(project *types.Project, serviceName string) (*types.Project, error) {
+	for _, svc := range project.Services {
+		if svc.Name == serviceName {
+			svc.DependsOn = nil
+			scoped := *project
+			scoped.Services = types.Services{serviceName: svc}
+			return &scoped, nil
+		}
+	}
+	return nil, fmt.Errorf("service %q not found in compose project %q", serviceName, project.Name)
+}
+
 func summarizeServices(services types.Services) []ComposeServiceSummary {
 	summaries := make([]ComposeServiceSummary, 0, len(services))
 	for _, svc := range services {
@@ -324,13 +355,18 @@ func (c *ComposeClient) Up(ctx context.Context, projectName, serviceName, compos
 		return ComposeResult{Error: err}
 	}
 	c.logComposeStart("up", projectName, serviceName, composeFile, preflight)
+	scoped, err := scopeProjectToService(project, serviceName)
+	if err != nil {
+		return ComposeResult{Error: err, Preflight: preflight}
+	}
 	service, output, err := c.newService()
 	if err != nil {
 		return ComposeResult{Error: err, Preflight: preflight}
 	}
-	// RecreateNever: Up means "ensure running", not "converge to desired state".
-	// Convergence is suppressed in all deployment modes — see file header.
-	err = service.Up(ctx, project, api.UpOptions{
+	// RecreateNever + scoped project: belt-and-suspenders against convergence.
+	// Scoping hides other services from the SDK. RecreateNever prevents
+	// reconvergence on the target service itself. See file header.
+	err = service.Up(ctx, scoped, api.UpOptions{
 		Create: api.CreateOptions{
 			Services: []string{serviceName},
 			Recreate: api.RecreateNever,
@@ -390,11 +426,15 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 		return result
 	}
 	c.logComposeStart("recreate", projectName, serviceName, composeFile, preflight, "strategy", "remove_then_up")
+	scoped, err := scopeProjectToService(project, serviceName)
+	if err != nil {
+		return ComposeResult{Error: err, Preflight: preflight}
+	}
 	service, output, err := c.newService()
 	if err != nil {
 		return ComposeResult{Error: err, Preflight: preflight}
 	}
-	err = service.Up(ctx, project, api.UpOptions{
+	err = service.Up(ctx, scoped, api.UpOptions{
 		Create: api.CreateOptions{
 			Services: []string{serviceName},
 			Recreate: api.RecreateNever,
@@ -437,11 +477,15 @@ func (c *ComposeClient) Build(ctx context.Context, projectName, serviceName, com
 		return ComposeResult{Error: err}
 	}
 	c.logComposeStart("build", projectName, serviceName, composeFile, preflight)
+	scoped, err := scopeProjectToService(project, serviceName)
+	if err != nil {
+		return ComposeResult{Error: err, Preflight: preflight}
+	}
 	service, output, err := c.newService()
 	if err != nil {
 		return ComposeResult{Error: err, Preflight: preflight}
 	}
-	err = service.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}})
+	err = service.Build(ctx, scoped, api.BuildOptions{Services: []string{serviceName}})
 	result := ComposeResult{Output: output.String(), Error: composeResultError(output.String(), err), Preflight: preflight}
 	c.logComposeResult("build", projectName, serviceName, result)
 	return result
