@@ -802,7 +802,7 @@ func TestDangerous_WebhookReceivesPayload(t *testing.T) {
 	if receivedPayload == nil {
 		t.Fatal("webhook was not called")
 	}
-	for _, field := range []string{"approval_key", "action", "service", "project", "expires_at", "message"} {
+	for _, field := range []string{"approval_key", "action", "service", "project", "caller", "expires_at", "message"} {
 		if receivedPayload[field] == "" {
 			t.Errorf("webhook payload missing field %q", field)
 		}
