@@ -31,6 +31,9 @@ projects:
   myproject:
     # Path to docker-compose.yml — use the real host path so compose
     # labels and volume mounts match. ${PWD} is expanded at config load.
+    # If safe-docker runs in a container, mount the full managed project root
+    # at that same absolute path inside the container (for example
+    # ${PWD}:${PWD}), not /project.
     compose_file: ${PWD}/docker-compose.yml
     services:
       # Service key = Docker Compose service name

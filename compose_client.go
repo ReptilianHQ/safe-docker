@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -134,6 +135,29 @@ func (c *ComposeClient) newService() (api.Compose, *bytes.Buffer, error) {
 		return nil, nil, fmt.Errorf("failed to create compose service: %w", err)
 	}
 	return service, output, nil
+}
+
+func (c *ComposeClient) runComposeCLI(ctx context.Context, projectName, composeFile string, args ...string) (string, error) {
+	if composeFile == "" {
+		composeFile = DefaultComposeFile
+	}
+	if pwd := strings.TrimSpace(os.Getenv("PWD")); pwd != "" && !strings.HasPrefix(composeFile, pwd+string(os.PathSeparator)) {
+		candidate := filepath.Join(pwd, filepath.Base(composeFile))
+		if _, err := os.Stat(candidate); err == nil {
+			composeFile = candidate
+		}
+	}
+	if _, err := os.Stat(composeFile); err != nil {
+		return "", fmt.Errorf("compose file not found at %s: %w", composeFile, err)
+	}
+	projectDir := filepath.Dir(composeFile)
+	cmdArgs := []string{"compose", "-p", projectName, "-f", composeFile}
+	cmdArgs = append(cmdArgs, args...)
+	cmd := exec.CommandContext(ctx, "docker", cmdArgs...)
+	cmd.Dir = projectDir
+	cmd.Env = os.Environ()
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 func (c *ComposeClient) loadProject(ctx context.Context, projectName, composeFile string) (*types.Project, error) {
@@ -399,10 +423,10 @@ func (c *ComposeClient) Down(ctx context.Context, projectName, serviceName, comp
 	return result
 }
 
-// Recreate destroys the target service's container and creates a fresh one.
-// This is a dangerous action gated behind HITL approval. Uses explicit
-// Docker API removal followed by a compose Up with RecreateNever, bypassing
-// the SDK's rename-aside cycle entirely.
+// Recreate destroys and freshly recreates the target service's container.
+// This is a dangerous action gated behind HITL approval. For this path we use
+// the Docker Compose CLI directly to preserve normal Compose semantics/labels
+// while still wrapping it in policy, auditing, and postcondition checks.
 func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, composeFile string) ComposeResult {
 	project, err := c.loadProject(ctx, projectName, composeFile)
 	if err != nil {
@@ -412,53 +436,26 @@ func (c *ComposeClient) Recreate(ctx context.Context, projectName, serviceName, 
 	if err != nil {
 		return ComposeResult{Error: err}
 	}
-	// Explicit removal via Docker API, then compose create.
-	existing, err := c.listServiceContainers(ctx, projectName, serviceName)
-	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight}
-	}
-	if c.log != nil {
-		c.log.Debug("compose recreate discovered existing containers", "project", projectName, "service", serviceName, "count", len(existing), "containers", summarizeContainers(existing))
-	}
-	if err := c.removeServiceContainers(ctx, projectName, serviceName, existing, "pre_recreate_reset"); err != nil {
-		result := ComposeResult{Error: err, Preflight: preflight}
-		c.logComposeResult("recreate", projectName, serviceName, result)
-		return result
-	}
-	c.logComposeStart("recreate", projectName, serviceName, composeFile, preflight, "strategy", "remove_then_up")
-	scoped, err := scopeProjectToService(project, serviceName)
-	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight}
-	}
-	service, output, err := c.newService()
-	if err != nil {
-		return ComposeResult{Error: err, Preflight: preflight}
-	}
-	err = service.Up(ctx, scoped, api.UpOptions{
-		Create: api.CreateOptions{
-			Services: []string{serviceName},
-			Recreate: api.RecreateNever,
-		},
-		Start: api.StartOptions{Services: []string{serviceName}},
-	})
+	c.logComposeStart("recreate", projectName, serviceName, composeFile, preflight, "strategy", "docker_compose_cli_force_recreate")
+	output, err := c.runComposeCLI(ctx, projectName, effectiveComposeFile(composeFile), "up", "-d", "--no-deps", "--force-recreate", serviceName)
 	result := ComposeResult{
-		Output:    output.String(),
-		Error:     composeResultError(output.String(), err),
+		Output:    output,
+		Error:     composeResultError(output, err),
 		Preflight: preflight,
-		Notes:     []string{"Recreate uses explicit Docker API removal then compose Up with RecreateNever, bypassing the SDK's rename-aside cycle."},
+		Notes:     []string{"Recreate uses `docker compose up -d --no-deps --force-recreate <service>` for Compose-native semantics, then verifies the resulting service container."},
 	}
-	removedArtifacts, cleanupErr := c.cleanupRecreateArtifacts(ctx, projectName, serviceName, nil)
-	if len(removedArtifacts) > 0 {
-		result.Output = strings.TrimSpace(result.Output + "\ncleanup removed stale containers: " + strings.Join(removedArtifacts, ", "))
-	}
-	if cleanupErr != nil {
-		if c.log != nil {
-			c.log.Warn("compose recreate cleanup failed", "project", projectName, "service", serviceName, "error", cleanupErr)
-		}
+	if verified, verifyErr := c.listServiceContainers(ctx, projectName, serviceName); verifyErr != nil {
 		if result.Error == nil {
-			result.Error = cleanupErr
+			result.Error = fmt.Errorf("recreate postcondition failed: %w", verifyErr)
 		} else {
-			result.Error = fmt.Errorf("%w | recreate cleanup: %v", result.Error, cleanupErr)
+			result.Error = fmt.Errorf("%w | recreate postcondition: %v", result.Error, verifyErr)
+		}
+	} else if len(verified) == 0 {
+		postErr := fmt.Errorf("recreate did not produce a container for service %q in project %q", serviceName, projectName)
+		if result.Error == nil {
+			result.Error = postErr
+		} else {
+			result.Error = fmt.Errorf("%w | %v", result.Error, postErr)
 		}
 	}
 	c.logComposeResult("recreate", projectName, serviceName, result)
@@ -551,41 +548,3 @@ func isNotFoundContainerErr(err error) bool {
 	return strings.Contains(msg, "no such container") || strings.Contains(msg, "not found")
 }
 
-func (c *ComposeClient) removeServiceContainers(ctx context.Context, projectName, serviceName string, containers []mobycontainer.Summary, reason string) error {
-	for _, ctr := range containers {
-		name := composeContainerName(ctr)
-		if c.log != nil {
-			c.log.Debug("compose recreate removing existing container", "project", projectName, "service", serviceName, "container_id", ctr.ID, "container", name, "state", ctr.State, "status", ctr.Status, "reason", reason)
-		}
-		if _, err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, mobyclient.ContainerRemoveOptions{Force: true}); err != nil && !isNotFoundContainerErr(err) {
-			return fmt.Errorf("remove container %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
-func (c *ComposeClient) cleanupRecreateArtifacts(ctx context.Context, projectName, serviceName string, preserveIDs map[string]struct{}) ([]string, error) {
-	containers, err := c.listServiceContainers(ctx, projectName, serviceName)
-	if err != nil {
-		return nil, err
-	}
-	removed := make([]string, 0)
-	for _, ctr := range containers {
-		if _, ok := preserveIDs[ctr.ID]; ok {
-			continue
-		}
-		if !shouldCleanupRecreateContainer(ctr) {
-			continue
-		}
-		name := composeContainerName(ctr)
-		if _, err := c.dockerCLI.Client().ContainerRemove(ctx, ctr.ID, mobyclient.ContainerRemoveOptions{Force: true}); err != nil {
-			if isNotFoundContainerErr(err) {
-				continue
-			}
-			return removed, fmt.Errorf("remove stale container %s: %w", name, err)
-		}
-		removed = append(removed, name)
-	}
-	sort.Strings(removed)
-	return removed, nil
-}

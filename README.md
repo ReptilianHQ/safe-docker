@@ -163,18 +163,21 @@ Example payload:
 
 See `docker-compose.example.yaml`.
 
-**Required for build/recreate:** Mount the project root at its real host path so compose labels and volume mounts match:
+**Required for containerized build/recreate:** If `safe-docker` itself runs in a container, the project mount path inside the container must match the real host path that Docker Compose uses. In practice, mount the repo as `${PWD}:${PWD}` (or another identical absolute path on both sides), not as a synthetic path like `/project`.
 
 ```yaml
 safe-docker:
   image: ghcr.io/reptilianhq/safe-docker:latest
+  working_dir: ${PWD}
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
-    - ${PWD}:${PWD}:ro  # Project root at its real path
+    - ${PWD}:${PWD}:ro  # Project root at the same absolute path as the host
     - ./policy.yaml:/app/policy.yaml:ro
+  environment:
+    - PWD=${PWD}
 ```
 
-Set `compose_file` in the policy to the real path (e.g. `${PWD}/docker-compose.yml`). This ensures the compose SDK resolves paths identically to running on the host.
+Set `compose_file` in the policy to that same real path (for example `${PWD}/docker-compose.yml`). In most cases, mount the full managed project root rather than only the compose file so Compose can resolve bind mounts, env files, build contexts, and related paths consistently. If the container sees `/project/docker-compose.yml` but Docker Desktop/host Compose sees `/Users/.../docker-compose.yml`, recreate/build can fail with mount-denied errors because the bind-mount paths no longer match. If `safe-docker` runs directly on the host, this extra path-mirroring step is not needed.
 
 Compose-backed endpoints return compact compose output plus preflight/debug metadata on success/failure.
 
