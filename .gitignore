@@ -21,3 +21,7 @@ vendor/
 
 # Local runtime files
 policy.yaml
+
+# Python cache / local helper noise
+__pycache__/
+*.py[cod]
