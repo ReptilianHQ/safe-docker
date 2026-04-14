@@ -11,7 +11,7 @@ Safe by default. Human-readable policy. Built for agents, operators, and interna
 - health, status, logs (read-only)
 - restart, start, stop (container lifecycle)
 - up, down (compose service management)
-- recreate, build (dangerous — require explicit opt-in + HITL approval)
+- recreate, build, build_recreate (dangerous — require explicit opt-in + HITL approval)
 
 It does **not** expose the full Docker API.
 It is a policy firewall in front of Docker, not a Docker replacement.
@@ -48,6 +48,7 @@ One bug or prompt injection becomes host-level container control.
 - `POST /v1/projects/{project}/services/{service}/down`
 - `POST /v1/projects/{project}/services/{service}/recreate` ⚠️
 - `POST /v1/projects/{project}/services/{service}/build` ⚠️
+- `POST /v1/projects/{project}/services/{service}/build_recreate` ⚠️
 
 ⚠️ = Dangerous actions. Require `dangerous: true` in service policy.
 
@@ -79,8 +80,8 @@ projects:
         actions: [status, logs]  # No restart — data safety
 
       worker:
-        actions: [status, logs, restart, recreate]
-        dangerous: true  # Required for recreate
+        actions: [status, logs, restart, recreate, build]
+        dangerous: true  # Required for dangerous actions like recreate/build/build_recreate
 ```
 
 Container resolution:
@@ -185,7 +186,7 @@ Preflight / dry-run:
 - `?dry_run=true` or `?preflight=true` inspects the compose project in-process
 - Preflight never executes the mutating compose action and never triggers approval
 
-Dangerous approval semantics are unchanged: `build` and `recreate` still require policy opt-in plus HITL approval before execution.
+Dangerous approval semantics are unchanged for the atomic actions: `build` and `recreate` still require policy opt-in plus HITL approval before execution. `build_recreate` is an explicit combined dangerous action for the common "build new image and immediately roll it out" case; it is only authorized when the service is allowed for both `build` and `recreate`, so policy does not need a separate extra grant beyond those two permissions.
 
 Recommended deployment posture:
 - bind only to localhost or a trusted internal network

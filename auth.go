@@ -57,7 +57,13 @@ func (s *Server) authorizeAction(w http.ResponseWriter, r *http.Request, action 
 		writeError(w, http.StatusNotFound, "unknown service")
 		return "", "", ServicePolicy{}, false
 	}
-	if !slices.Contains(policy.Actions, action) {
+	if action == "build_recreate" {
+		if !slices.Contains(policy.Actions, "build") || !slices.Contains(policy.Actions, "recreate") {
+			s.audit(r, action, service, policy.Container, "denied", "build_recreate requires both build and recreate permissions")
+			writeError(w, http.StatusForbidden, "action not allowed")
+			return "", "", policy, false
+		}
+	} else if !slices.Contains(policy.Actions, action) {
 		s.audit(r, action, service, policy.Container, "denied", "action not allowed")
 		writeError(w, http.StatusForbidden, "action not allowed")
 		return "", "", policy, false

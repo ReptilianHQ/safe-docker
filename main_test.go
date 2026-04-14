@@ -766,6 +766,21 @@ func TestDangerous_NoWebhook(t *testing.T) {
 	}
 }
 
+// TestBuildRecreate_RequiresBothPermissions verifies the combined action is only
+// authorized when policy allows both build and recreate for the service.
+func TestBuildRecreate_RequiresBothPermissions(t *testing.T) {
+	cfg := minimalConfig()
+	proj := cfg.Projects["testproj"]
+	proj.Services["buildonly"] = ServicePolicy{Container: "testproj-buildonly-1", Actions: []string{"build"}, Dangerous: true}
+	cfg.Projects["testproj"] = proj
+	srv := stubServer(cfg)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/buildonly/build_recreate", "test-agent")
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("want 403 when build_recreate lacks both permissions, got %d", rr.Code)
+	}
+}
+
 // TestDangerous_WebhookReceivesPayload verifies webhook is POSTed with correct fields
 // and the caller gets 202 (token must NOT appear in response).
 func TestDangerous_WebhookReceivesPayload(t *testing.T) {
@@ -815,6 +830,35 @@ func TestDangerous_WebhookReceivesPayload(t *testing.T) {
 	}
 	if receivedPayload["service"] != "danger" {
 		t.Errorf("want service=danger, got %q", receivedPayload["service"])
+	}
+}
+
+// TestBuildRecreate_WebhookReceivesCombinedAction verifies the webhook payload
+// preserves the explicit combined action name.
+func TestBuildRecreate_WebhookReceivesCombinedAction(t *testing.T) {
+	var receivedPayload map[string]string
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&receivedPayload); err != nil {
+			t.Errorf("decode webhook payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookSrv.Close()
+
+	cfg := configWithDangerousService()
+	cfg.Approval.WebhookURL = webhookSrv.URL
+	srv := stubServer(cfg)
+	srv.approvals = make(map[string]*pendingApproval)
+
+	rr := post(t, srv, "/v1/projects/testproj/services/danger/build_recreate", "test-agent")
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if receivedPayload == nil {
+		t.Fatal("webhook was not called")
+	}
+	if receivedPayload["action"] != "build_recreate" {
+		t.Errorf("want action=build_recreate, got %q", receivedPayload["action"])
 	}
 }
 

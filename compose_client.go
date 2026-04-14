@@ -488,6 +488,44 @@ func (c *ComposeClient) Build(ctx context.Context, projectName, serviceName, com
 	return result
 }
 
+// BuildRecreate explicitly builds the service image and then force-recreates the
+// service container in one Compose-native operation. This is a dangerous action
+// gated behind HITL approval and requires both build + recreate permissions.
+func (c *ComposeClient) BuildRecreate(ctx context.Context, projectName, serviceName, composeFile string) ComposeResult {
+	project, err := c.loadProject(ctx, projectName, composeFile)
+	if err != nil {
+		return ComposeResult{Error: err}
+	}
+	preflight, err := c.preflightProject(ctx, project, projectName, serviceName, composeFile)
+	if err != nil {
+		return ComposeResult{Error: err}
+	}
+	c.logComposeStart("build_recreate", projectName, serviceName, composeFile, preflight, "strategy", "docker_compose_cli_build_force_recreate")
+	output, err := c.runComposeCLI(ctx, projectName, effectiveComposeFile(composeFile), "up", "-d", "--no-deps", "--build", "--force-recreate", serviceName)
+	result := ComposeResult{
+		Output:    output,
+		Error:     composeResultError(output, err),
+		Preflight: preflight,
+		Notes:     []string{"build_recreate uses `docker compose up -d --no-deps --build --force-recreate <service>` so the rebuilt image is applied immediately with Compose-native semantics, then verifies the resulting service container."},
+	}
+	if verified, verifyErr := c.listServiceContainers(ctx, projectName, serviceName); verifyErr != nil {
+		if result.Error == nil {
+			result.Error = fmt.Errorf("build_recreate postcondition failed: %w", verifyErr)
+		} else {
+			result.Error = fmt.Errorf("%w | build_recreate postcondition: %v", result.Error, verifyErr)
+		}
+	} else if len(verified) == 0 {
+		postErr := fmt.Errorf("build_recreate did not produce a container for service %q in project %q", serviceName, projectName)
+		if result.Error == nil {
+			result.Error = postErr
+		} else {
+			result.Error = fmt.Errorf("%w | %v", result.Error, postErr)
+		}
+	}
+	c.logComposeResult("build_recreate", projectName, serviceName, result)
+	return result
+}
+
 func composeContainerName(c mobycontainer.Summary) string {
 	for _, name := range c.Names {
 		trimmed := strings.TrimSpace(strings.TrimPrefix(name, "/"))

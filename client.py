@@ -111,3 +111,8 @@ class SafeDockerClient:
         """docker compose build <service>"""
         proj = project or self.project
         return self._post(f"/v1/projects/{proj}/services/{service}/build")
+
+    def build_recreate(self, service: str, project: str | None = None) -> dict[str, Any]:
+        """docker compose up -d --no-deps --build --force-recreate <service>"""
+        proj = project or self.project
+        return self._post(f"/v1/projects/{proj}/services/{service}/build_recreate")

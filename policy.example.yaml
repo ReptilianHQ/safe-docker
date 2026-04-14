@@ -21,7 +21,7 @@ auth:
 # Each project key corresponds to a Docker Compose project name.
 # The project key is used for:
 #   - compose label matching (com.docker.compose.project)
-#   - the -p flag for compose commands (up, down, recreate, build)
+#   - the -p flag for compose commands (up, down, recreate, build, build_recreate)
 #
 # API: /v1/projects/{project}/services/{service}/{action}
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ logging:
 # ---------------------------------------------------------------------------
 # Human-in-the-loop (HITL) approval for dangerous actions
 #
-# When webhook_url is set, dangerous actions (recreate, build) are intercepted:
+# When webhook_url is set, dangerous actions (recreate, build, build_recreate) are intercepted:
 #   1. A one-time approval token is generated and POSTed to webhook_url
 #   2. The caller receives HTTP 202 pending_approval
 #   3. A human reviews the webhook payload and calls POST /v1/approve

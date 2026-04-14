@@ -236,6 +236,10 @@ func (s *Server) buildHandler(w http.ResponseWriter, r *http.Request) {
 	s.composeHandler(w, r, "build")
 }
 
+func (s *Server) buildRecreateHandler(w http.ResponseWriter, r *http.Request) {
+	s.composeHandler(w, r, "build_recreate")
+}
+
 func composePreflightRequested(r *http.Request) bool {
 	for _, key := range []string{"dry_run", "preflight"} {
 		raw := strings.TrimSpace(r.URL.Query().Get(key))
@@ -308,6 +312,8 @@ func (s *Server) executeCompose(w http.ResponseWriter, r *http.Request, action, 
 		result = s.compose.Recreate(ctx, project, service, composeFile)
 	case "build":
 		result = s.compose.Build(ctx, project, service, composeFile)
+	case "build_recreate":
+		result = s.compose.BuildRecreate(ctx, project, service, composeFile)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported compose action: %s", action))
 		return

@@ -120,7 +120,7 @@ components:
           type: array
           items:
             type: string
-            enum: [status, logs, restart, start, stop, up, down, recreate, build]
+            enum: [status, logs, restart, start, stop, up, down, recreate, build, build_recreate]
           example: ["status", "logs", "restart"]
 
     ServicesResponse:
@@ -537,11 +537,44 @@ paths:
         "502":
           $ref: "#/components/responses/BadGateway"
 
+  /v1/projects/{project}/services/{service}/build_recreate:
+    post:
+      summary: Compose build + recreate (dangerous)
+      description: |
+        Runs `docker compose -p {project} up -d --no-deps --build --force-recreate {service}`.
+        This is an explicit one-shot rollout action: build the image, then replace the service container with it.
+        Requires `dangerous: true` and the service must be allowed for both `build` and `recreate` in policy.
+        Add `?dry_run=true` (or `?preflight=true`) to return compose debug/preflight info without executing or requesting approval.
+      parameters:
+        - $ref: "#/components/parameters/ProjectParam"
+        - $ref: "#/components/parameters/ServiceParam"
+        - name: X-Webhook-Context
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional JSON object to echo in approval webhook payloads. Safe-docker validates that it is a JSON object, but does not interpret its contents.
+      responses:
+        "200":
+          description: Build + recreate completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComposeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
   /v1/approve:
     post:
       summary: Execute a previously-approved dangerous action
       description: |
-        Executes a dangerous action (build, recreate) after human approval via webhook.
+        Executes a dangerous action (build, recreate, build_recreate) after human approval via webhook.
         The approval token must be obtained from the webhook payload sent during the
         initial dangerous action request.
       requestBody:

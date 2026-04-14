@@ -203,6 +203,8 @@ func (s *Server) approveHandler(w http.ResponseWriter, r *http.Request) {
 		result = s.compose.Recreate(ctx, project, service, composeFile)
 	case "build":
 		result = s.compose.Build(ctx, project, service, composeFile)
+	case "build_recreate":
+		result = s.compose.BuildRecreate(ctx, project, service, composeFile)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported approved action: %s", action))
 		return

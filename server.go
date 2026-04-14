@@ -142,6 +142,7 @@ func (s *Server) router() http.Handler {
 		r.Post("/v1/projects/{project}/services/{service}/down", s.downHandler)
 		r.Post("/v1/projects/{project}/services/{service}/recreate", s.recreateHandler)
 		r.Post("/v1/projects/{project}/services/{service}/build", s.buildHandler)
+		r.Post("/v1/projects/{project}/services/{service}/build_recreate", s.buildRecreateHandler)
 		r.Post("/v1/approve", s.approveHandler)
 	})
 	return r

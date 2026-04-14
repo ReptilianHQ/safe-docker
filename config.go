@@ -22,22 +22,25 @@ var validActions = map[string]struct{}{
 	"stop":     {},
 	"up":       {},
 	"down":     {},
-	"recreate": {},
-	"build":    {},
+	"recreate":       {},
+	"build":          {},
+	"build_recreate": {},
 }
 
 // dangerousActions require explicit opt-in via `dangerous: true` in policy
 var dangerousActions = map[string]struct{}{
-	"recreate": {},
-	"build":    {},
+	"recreate":       {},
+	"build":          {},
+	"build_recreate": {},
 }
 
 // composeActions are actions that require a compose file (handled via the Compose SDK).
 var composeActions = map[string]struct{}{
-	"up":       {},
-	"down":     {},
-	"recreate": {},
-	"build":    {},
+	"up":             {},
+	"down":           {},
+	"recreate":       {},
+	"build":          {},
+	"build_recreate": {},
 }
 
 type Config struct {
@@ -74,7 +77,7 @@ type AuthConfig struct {
 type ServicePolicy struct {
 	Container string   `yaml:"container,omitempty"` // Optional: container name for Docker SDK actions (status/logs/restart/start/stop). If omitted, service key is used.
 	Actions   []string `yaml:"actions"`
-	Dangerous bool     `yaml:"dangerous"` // Required for recreate/build actions
+	Dangerous bool     `yaml:"dangerous"` // Required for recreate/build/build_recreate actions
 }
 
 type LoggingConfig struct {
@@ -216,7 +219,7 @@ func (c *Config) validate() error {
 			}
 		}
 		if needsCompose && strings.TrimSpace(projectCfg.ComposeFile) == "" {
-			return fmt.Errorf("projects.%s.compose_file is required when any service uses compose actions (up/down/recreate/build)", project)
+			return fmt.Errorf("projects.%s.compose_file is required when any service uses compose actions (up/down/recreate/build/build_recreate)", project)
 		}
 	}
 	if c.Docker.TimeoutSeconds <= 0 {
