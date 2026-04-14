@@ -578,11 +578,4 @@ func (c *ComposeClient) listServiceContainers(ctx context.Context, projectName, 
 	return matched, nil
 }
 
-func isNotFoundContainerErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "no such container") || strings.Contains(msg, "not found")
-}
 
